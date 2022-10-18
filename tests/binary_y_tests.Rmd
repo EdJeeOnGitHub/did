@@ -1,0 +1,288 @@
+---
+title: "Tests binary Y works"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r, echo=FALSE, results="hide", warning=FALSE, message=FALSE}
+source(here::here("vignettes/setup_sims.R"))
+devtools::load_all()
+# remotes::install_github("pedrohcgs/DRDID")
+library(BMisc)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+
+ncl <- 1
+time.periods <- 4
+biters <- 200
+```
+
+
+
+```{r}
+# Creates simulation params
+sim_params = did::reset.sim(time.periods = 10)
+
+sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
+    as_tibble()
+
+library(tidyverse)
+
+binary_sim_df = sim_df %>%
+    group_by(G) %>%
+    mutate(Y_above = Y > quantile(Y, 0.75)) %>%
+    ungroup() %>%
+    group_by(id) %>%
+    mutate(
+        first_Y =  min(period[Y_above == TRUE])
+    ) %>%
+    mutate(Y_binary = period >= first_Y)
+
+
+binary_sim_df %>%
+    group_by(period, G) %>%
+    summarise(n_outcome = sum(Y_binary)) %>%
+    ggplot(aes(
+        x = period, 
+        y = n_outcome, 
+        colour = factor(G)
+    )) +
+    geom_line()
+
+debug(att_gt)
+
+cs_fit = att_gt(
+    binary_sim_df,
+    yname = "Y_binary",
+    tname = "period",
+    gname = "G",
+    idname = "id",
+    xformla = ~1, 
+    print_details = TRUE,
+    base_period = "varying",
+    control_group = "notyettreated" )
+
+library(data.table)
+
+df = as.data.table(binary_sim_df)
+
+
+att_g_t = function(df, t, g){
+
+    if (t >= g) {
+        y_t_treated = df[G == g & period == t, .(n = .N, g = g, t = g), by = Y_binary]
+        y_gm1_treated = df[G == g & period == g - 1, .(n = .N, g = g, t = g), by = Y_binary]
+
+        # are you treated by period t
+        y_t_nyt = df[(t < G | G == 0) & period == t, .(n = .N, g = g, t = g), by = Y_binary]
+        y_gm1_nyt = df[(t < G | G == 0) & period == g-1, .(n = .N, g = g, t = g), by = Y_binary]
+    }
+    
+    if (t < g) {
+        y_t_treated = df[G == g & period == t, .(n = .N, g = g, t = g), by = Y_binary]
+        y_gm1_treated = df[G == g & period == t - 1, .(n = .N, g = g, t = g), by = Y_binary]
+
+        # are you treated by period t
+        y_t_nyt = df[G != g][g < G][t < G][period == t][, .(n = .N, g = g, t = g), by = Y_binary]
+        y_gm1_nyt = df[G != g][g < G][t < G][period == t  - 1][, .(n = .N, g = g, t = g), by = Y_binary]
+    }
+#     y_t_treated
+#     y_gm1_treated
+
+
+#     y_t_nyt
+#     y_gm1_nyt
+
+#     Y_t_g_nyt
+
+# Y_t_g    
+# Y_gm1_g
+
+# Y_t_g_nyt
+# Y_gm1_nyt
+
+    calc_expectation = function(df){
+        expectation = df[Y_binary == TRUE, n]/sum(df[, n])
+        return(expectation)
+    }
+
+    e_y_t_treated = calc_expectation(y_t_treated)
+    e_y_gm1_treated = calc_expectation(y_gm1_treated)
+
+    e_y_t_nyt = calc_expectation(y_t_nyt)
+    e_y_gm1_nyt = calc_expectation(y_gm1_nyt)
+
+    treat_diff = e_y_t_treated - e_y_gm1_treated
+    control_diff = e_y_t_nyt - e_y_gm1_nyt
+
+    att_g_t = treat_diff - control_diff
+    return(lst(att_g_t, g, t))
+}
+
+find_n_Y = function(df, t, g){
+    summ_df = df[G == g & period == t, .(n = .N, G = g, period = t), by = Y_binary]
+    return(summ_df)
+}
+
+# todo: fix nyt with t - g < 1
+find_n_y_nyt = function(df, t, nyt_t = t, nyt_g = g){
+     summ_df = df[((G > nyt_g & nyt_t < G) | G == 0) & period == t & G != nyt_g, .(n = .N), by = Y_binary]
+    # if (t < nyt_g) {
+    #     summ_df = df[ g != G & period == t, .(n = .N, G = g, period = t), by = Y_binary]
+    # } else {
+    #     summ_df = df[((G > nyt_g & nyt_t < G) | G == 0) & period == t, .(n = .N, G = g, period = t), by = Y_binary]
+    # }
+    return(summ_df)
+}
+
+
+find_att_g_t = function(df, t, g){
+    # df = df
+    # t = 2
+    # g = 4
+    if (t < g) {
+        gm1 = t - 1
+    } else {  
+        gm1 = g -1
+    }
+    Y_t_g  = find_n_Y(df, t = t, g = g)
+    Y_gm1_g = find_n_Y(df, t = gm1, g = g)
+
+    if (t < g) {
+        Y_t_g_nyt = find_n_y_nyt(df, t = t, nyt_t = t, nyt_g = g)
+        Y_gm1_nyt = find_n_y_nyt(df, t = gm1, nyt_t = t, nyt_g = g)
+    } else {
+        Y_t_g_nyt = find_n_y_nyt(df, t = t, nyt_t = t, nyt_g = g)
+        Y_gm1_nyt = find_n_y_nyt(df, t = gm1, nyt_t = t, nyt_g = g)
+    }
+
+
+
+    df[G != g & t < G & period == t, .(n = .N, G = g, period = t), by = Y_binary]
+
+    Y_t_g_nyt
+
+
+    calc_expectation = function(df){
+        expectation = df[Y_binary == TRUE, n]/sum(df[, n])
+        return(expectation)
+    }
+
+    e_Y_t_g = calc_expectation(Y_t_g)
+    e_Y_gm1_g = calc_expectation(Y_gm1_g)
+
+    e_Y_g_nyt = calc_expectation(Y_t_g_nyt)
+    e_Y_gm1_nyt = calc_expectation(Y_gm1_nyt)
+
+    treat_diff = e_Y_t_g - e_Y_gm1_g
+    control_diff = e_Y_g_nyt - e_Y_gm1_nyt
+
+    att_g_t = treat_diff - control_diff
+    return(lst(att_g_t, g, t))
+}
+
+
+gs_and_ts = binary_sim_df %>%
+    ungroup() %>%
+    select(G, period) %>%
+    unique()
+
+
+ed_fit = map2_dfr(
+    gs_and_ts$G,
+    gs_and_ts$period,
+    ~find_att_g_t(df, g = .x, t = .y)
+)
+ed_2_fit = map2_dfr(
+    gs_and_ts$G,
+    gs_and_ts$period,
+    ~att_g_t(df, g = .x, t = .y)
+)
+
+ed_fit
+
+ed_2_fit
+
+g_check = 8
+ed_fit %>%
+    arrange(g, t) %>%
+    filter(g == g_check) %>%
+    print()
+
+ed_2_fit %>%
+    arrange(g, t) %>%
+    filter(g == g_check) %>%
+    print()
+
+
+
+tidy(cs_fit) %>%
+    as_tibble() %>%
+    filter(group == g_check) %>%
+    select(
+        term, 
+        group, 
+        time,
+        estimate)
+
+comp_df = inner_join(
+
+    ed_2_fit %>%
+        arrange(g, t) %>%
+        filter(g == g_check) %>%
+        rename(group = g, time = t),
+    tidy(cs_fit) %>%
+        as_tibble() %>%
+        filter(group == g_check) %>%
+        select(
+            term, 
+            group, 
+            time,
+            estimate), 
+    by = c("group", "time")
+)
+
+comp_df %>%
+    select(att_g_t, estimate, everything()) %>%
+    mutate(diff = estimate - att_g_t) %>%
+    ggplot(aes(
+        x = time - group, y = diff
+    )) +
+    geom_point()
+
+df = as.data.table(binary_sim_df)
+
+find_n_Y(df, t = 2, g = 2)
+find_att_g_t(df, t = 2, g = 2)
+
+t_g_prod = expand.grid(t = 1:4, g = 0:4)
+
+map2_dfr(
+    t_g_prod$t,
+    t_g_prod$g,
+    ~find_n_Y(df = df, t = .x, g = .y)
+)
+
+
+
+find_n_Y
+
+ed_function = function(df){
+    df = binary_sim_df
+
+
+
+}
+
+
+
+
+```
