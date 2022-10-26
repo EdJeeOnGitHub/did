@@ -29,7 +29,7 @@ biters <- 200
 
 ```{r}
 # Creates simulation params
-sim_params = did::reset.sim(time.periods = 10)
+sim_params = did::reset.sim(time.periods = 20, n = 100)
 
 sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
     as_tibble()
@@ -38,7 +38,7 @@ library(tidyverse)
 
 binary_sim_df = sim_df %>%
     group_by(G) %>%
-    mutate(Y_above = Y > quantile(Y, 0.75)) %>%
+    mutate(Y_above = Y > quantile(Y, 0.15)) %>%
     ungroup() %>%
     group_by(id) %>%
     mutate(
@@ -57,8 +57,7 @@ binary_sim_df %>%
     )) +
     geom_line()
 
-debug(att_gt)
-
+devtools::load_all()
 cs_fit = att_gt(
     binary_sim_df,
     yname = "Y_binary",
@@ -69,6 +68,9 @@ cs_fit = att_gt(
     print_details = TRUE,
     base_period = "varying",
     control_group = "notyettreated" )
+
+
+cs_fit
 
 library(data.table)
 
@@ -90,9 +92,12 @@ att_g_t = function(df, t, g){
         y_t_treated = df[G == g & period == t, .(n = .N, g = g, t = g), by = Y_binary]
         y_gm1_treated = df[G == g & period == t - 1, .(n = .N, g = g, t = g), by = Y_binary]
 
-        # are you treated by period t
-        y_t_nyt = df[G != g][g < G][t < G][period == t][, .(n = .N, g = g, t = g), by = Y_binary]
-        y_gm1_nyt = df[G != g][g < G][t < G][period == t  - 1][, .(n = .N, g = g, t = g), by = Y_binary]
+        # data[data$period == t & data$G != g & (data$G > t | data$G == 0), ]
+        y_t_nyt = df[period == t & G != g & (G > t | G == 0), .(n = .N, g = g, t = g), by = Y_binary]
+        y_gm1_nyt = df[period == t -1 & G != g & (G > t | G == 0), .(n = .N, g = g, t = g), by = Y_binary]
+        # # are you treated by period t
+        # y_t_nyt = df[G != g][g < Gll][t < G][period == t][, .(n = .N, g = g, t = g), by = Y_binary]
+        # y_gm1_nyt = df[G != g][g < G][t < G][period == t  - 1][, .(n = .N, g = g, t = g), by = Y_binary]
     }
 #     y_t_treated
 #     y_gm1_treated
@@ -223,6 +228,13 @@ ed_2_fit %>%
     print()
 
 
+ed_2_fit  %>%
+    arrange(-g, t)
+
+tidy(cs_fit) %>%
+    as_tibble() %>%
+    select(estimate, group, time) %>%
+    arrange(-group)
 
 tidy(cs_fit) %>%
     as_tibble() %>%
@@ -260,7 +272,69 @@ comp_df %>%
 
 df = as.data.table(binary_sim_df)
 
-find_n_Y(df, t = 2, g = 2)
+
+calc_expectation = function(df){
+    expectation = df[Y_binary == TRUE, n]/sum(df[, n])
+    return(expectation)
+}
+
+g = 9
+t = 3
+a1 = find_n_Y(df, t = t, g = g)
+a2 = find_n_Y(df, t = t - 1, g = g)
+
+b1 = find_n_y_nyt(df, t = t, nyt_t = t, nyt_g = g   )
+b2 = find_n_y_nyt(df, t = t-1, nyt_t = t, nyt_g = g   )
+
+
+A1 = calc_expectation(a1)
+A2 = calc_expectation(a2)
+
+B1 = calc_expectation(b1)
+B2 = calc_expectation(b2)
+
+
+
+MA1 = df[period == t & G == g, mean(Y_binary)]
+MA2 = df[period == t-1 & G == g, mean(Y_binary)]
+
+
+MB1 = df[period == t & (G != g), mean(Y_binary)]
+MB2 = df[period == t - 1 & (G != g), mean(Y_binary)]
+
+
+
+
+
+md1 = MA1 - MA2
+md2 = MB1 - MB2
+
+
+md1 - md2
+
+
+
+md2
+
+d2
+
+
+d1 = A1 - A2
+
+d2 = B1 - B2
+
+
+d1 - d2
+
+
+
+tidy(cs_fit) %>%
+    as_tibble() %>%
+    filter(group == g & time == t) %>%
+    unique()
+
+
+
 find_att_g_t(df, t = 2, g = 2)
 
 t_g_prod = expand.grid(t = 1:4, g = 0:4)
