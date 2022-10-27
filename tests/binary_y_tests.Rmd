@@ -76,9 +76,7 @@ library(data.table)
 
 df = as.data.table(binary_sim_df)
 
-
 att_g_t = function(df, t, g){
-
     if (t >= g) {
         y_t_treated = df[G == g & period == t, .(n = .N, g = g, t = g), by = Y_binary]
         y_gm1_treated = df[G == g & period == g - 1, .(n = .N, g = g, t = g), by = Y_binary]
@@ -91,31 +89,18 @@ att_g_t = function(df, t, g){
     if (t < g) {
         y_t_treated = df[G == g & period == t, .(n = .N, g = g, t = g), by = Y_binary]
         y_gm1_treated = df[G == g & period == t - 1, .(n = .N, g = g, t = g), by = Y_binary]
-
-        # data[data$period == t & data$G != g & (data$G > t | data$G == 0), ]
+        
         y_t_nyt = df[period == t & G != g & (G > t | G == 0), .(n = .N, g = g, t = g), by = Y_binary]
         y_gm1_nyt = df[period == t -1 & G != g & (G > t | G == 0), .(n = .N, g = g, t = g), by = Y_binary]
-        # # are you treated by period t
-        # y_t_nyt = df[G != g][g < Gll][t < G][period == t][, .(n = .N, g = g, t = g), by = Y_binary]
-        # y_gm1_nyt = df[G != g][g < G][t < G][period == t  - 1][, .(n = .N, g = g, t = g), by = Y_binary]
     }
-#     y_t_treated
-#     y_gm1_treated
-
-
-#     y_t_nyt
-#     y_gm1_nyt
-
-#     Y_t_g_nyt
-
-# Y_t_g    
-# Y_gm1_g
-
-# Y_t_g_nyt
-# Y_gm1_nyt
 
     calc_expectation = function(df){
-        expectation = df[Y_binary == TRUE, n]/sum(df[, n])
+        # N.B. will impute first time period - 1 so don't include very first time period (CS drop this automatically) 
+        if (nrow(df[Y_binary == TRUE]) == 0){
+            expectation = 0
+        } else {
+            expectation = df[Y_binary == TRUE, n]/sum(df[, n])
+        }
         return(expectation)
     }
 
@@ -132,109 +117,99 @@ att_g_t = function(df, t, g){
     return(lst(att_g_t, g, t))
 }
 
-find_n_Y = function(df, t, g){
-    summ_df = df[G == g & period == t, .(n = .N, G = g, period = t), by = Y_binary]
-    return(summ_df)
-}
-
-# todo: fix nyt with t - g < 1
-find_n_y_nyt = function(df, t, nyt_t = t, nyt_g = g){
-     summ_df = df[((G > nyt_g & nyt_t < G) | G == 0) & period == t & G != nyt_g, .(n = .N), by = Y_binary]
-    # if (t < nyt_g) {
-    #     summ_df = df[ g != G & period == t, .(n = .N, G = g, period = t), by = Y_binary]
-    # } else {
-    #     summ_df = df[((G > nyt_g & nyt_t < G) | G == 0) & period == t, .(n = .N, G = g, period = t), by = Y_binary]
-    # }
-    return(summ_df)
-}
+gs_and_ts = tidy(cs_fit) %>%
+    select(G = group, period = time) %>%
+    unique() %>%
+    as_tibble()
 
 
-find_att_g_t = function(df, t, g){
-    # df = df
-    # t = 2
-    # g = 4
-    if (t < g) {
-        gm1 = t - 1
-    } else {  
-        gm1 = g -1
-    }
-    Y_t_g  = find_n_Y(df, t = t, g = g)
-    Y_gm1_g = find_n_Y(df, t = gm1, g = g)
+gs_and_ts %>%
+    dplyr::filter(G == 5)
 
-    if (t < g) {
-        Y_t_g_nyt = find_n_y_nyt(df, t = t, nyt_t = t, nyt_g = g)
-        Y_gm1_nyt = find_n_y_nyt(df, t = gm1, nyt_t = t, nyt_g = g)
-    } else {
-        Y_t_g_nyt = find_n_y_nyt(df, t = t, nyt_t = t, nyt_g = g)
-        Y_gm1_nyt = find_n_y_nyt(df, t = gm1, nyt_t = t, nyt_g = g)
-    }
-
-
-
-    df[G != g & t < G & period == t, .(n = .N, G = g, period = t), by = Y_binary]
-
-    Y_t_g_nyt
-
-
-    calc_expectation = function(df){
-        expectation = df[Y_binary == TRUE, n]/sum(df[, n])
-        return(expectation)
-    }
-
-    e_Y_t_g = calc_expectation(Y_t_g)
-    e_Y_gm1_g = calc_expectation(Y_gm1_g)
-
-    e_Y_g_nyt = calc_expectation(Y_t_g_nyt)
-    e_Y_gm1_nyt = calc_expectation(Y_gm1_nyt)
-
-    treat_diff = e_Y_t_g - e_Y_gm1_g
-    control_diff = e_Y_g_nyt - e_Y_gm1_nyt
-
-    att_g_t = treat_diff - control_diff
-    return(lst(att_g_t, g, t))
-}
-
-
-gs_and_ts = binary_sim_df %>%
-    ungroup() %>%
-    select(G, period) %>%
-    unique()
-
-
-ed_fit = map2_dfr(
-    gs_and_ts$G,
-    gs_and_ts$period,
-    ~find_att_g_t(df, g = .x, t = .y)
-)
-ed_2_fit = map2_dfr(
+manual_fit = map2_dfr(
     gs_and_ts$G,
     gs_and_ts$period,
     ~att_g_t(df, g = .x, t = .y)
+) %>%
+    rename(estimate = att_g_t, group = g, time = t)
+
+
+all_equal(
+    manual_fit, 
+    tidy(cs_fit) %>%
+        as_tibble() %>%
+        select(estimate, group, time)
 )
 
-ed_fit
 
-ed_2_fit
+manual_fit
 
-g_check = 8
-ed_fit %>%
-    arrange(g, t) %>%
-    filter(g == g_check) %>%
-    print()
-
-ed_2_fit %>%
-    arrange(g, t) %>%
-    filter(g == g_check) %>%
-    print()
+    tidy(cs_fit) %>%
+        as_tibble() %>%
+        select(estimate, group, time)
 
 
-ed_2_fit  %>%
-    arrange(-g, t)
+wide_comp_df = inner_join(
+    manual_fit  %>% rename(manual_estimate = estimate),
+    tidy(cs_fit) %>%
+        as_tibble() %>%
+        select(estimate, group, time) %>%
+        rename(cs_estimate = estimate), 
+        by = c("group", "time")
+)
 
-tidy(cs_fit) %>%
-    as_tibble() %>%
-    select(estimate, group, time) %>%
-    arrange(-group)
+
+wide_comp_df %>%
+    ggplot(aes(
+        x = cs_estimate,
+        y = manual_estimate
+    )) +
+    geom_point() +
+    geom_abline(linetype = "longdash") +
+    theme_bw()
+
+max_error = wide_comp_df %>%
+    mutate(error = abs(manual_estimate - cs_estimate)) %>%
+    summarise(max_error = max(error)) %>%
+    pull()
+
+
+if (max_error > 1e-8) {
+    stop("Manual Estimates Off")
+}
+
+comp_df = bind_rows(
+    manual_fit  %>% mutate(type = "manual"),
+    tidy(cs_fit) %>%
+        as_tibble() %>%
+        select(estimate, group, time) %>%
+        mutate(type = "cs")
+)
+
+
+comp_df %>%
+    ggplot(aes(
+        x = time - group, 
+        y = estimate, 
+        colour = type
+    )) +
+    geom_jitter()
+
+
+comp_df %>%
+    group_by(type, group) %>%
+    summarise(n = n())  %>%
+    arrange(group)
+
+comp_df %>%
+    dplyr::filter(group == 5) %>%
+    arrange(time)
+
+
+att_g_t(df, t = 3, g = 5)
+
+
+
 
 tidy(cs_fit) %>%
     as_tibble() %>%
