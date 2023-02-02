@@ -223,14 +223,37 @@ summ_indiv_df = df[
     ), 
     id]
 
-summ_indiv_df[, .N, .(first_Y, G)][
+y_absorb_dt = summ_indiv_df[, .N, .(first_Y, G)][
     order(G, first_Y),
     .(n = cumsum(N), t = first_Y),
     G
-][G == 4]
+]
 
+
+y_absorb_dt[t >= G]
 
 att_g_t(df, 7, 4, verbose = TRUE)
+
+completeDT <- function(DT, cols, defs = NULL){
+  
+  make_vals <- function(col) {
+    if(is.factor(col)) factor(levels(col))
+    else unique(col)
+  }
+  
+  mDT = do.call(CJ, c(lapply(DT[, ..cols], make_vals), list(unique=TRUE)))
+  res = DT[mDT, on=names(mDT)]
+  if (length(defs)) 
+    res[, names(defs) := Map(replace, .SD, lapply(.SD, is.na), defs), .SDcols=names(defs)]
+  res[]
+} 
+
+y_absorb_dt[, t := factor(t, levels = c(1:20, Inf))]
+
+y_absorb_dt %>%
+    completeDT(cols = c("G","t"), defs = c(n = NA)) %>%
+    mutate(t = as.numeric(t)) %>%
+    arrange(G, t) 
 
 ```
 
