@@ -230,6 +230,8 @@ y_absorb_dt = summ_indiv_df[, .N, .(first_Y, G)][
 ]
 
 
+n_total_df = df[, .N, by = .(G, period)]
+
 y_absorb_dt[t >= G]
 
 att_g_t(df, 7, 4, verbose = TRUE)
@@ -249,11 +251,51 @@ completeDT <- function(DT, cols, defs = NULL){
 } 
 
 y_absorb_dt[, t := factor(t, levels = c(1:20, Inf))]
+setcolorder(y_absorb_dt, c("G", "t", "n"))
+
+y_complete_absorb_dt = completeDT(
+    y_absorb_dt,
+    cols = c("G", "t"), 
+    defs = c(n = NA)
+)
+y_complete_absorb_dt[, t := as.numeric(t)]
+setorder(y_complete_absorb_dt, G, t)
+y_complete_absorb_dt[, n := nafill(n, type = "locf"), by = G]
+
+y_complete_absorb_dt[G == 2]
+
+
+y_complete_absorb_dt[t >= G][is.na(n)]
+
+
+y_complete_absorb_dt[, n_gm1 := shift(n), G]
+
+
+y_complete_absorb_dt
+
+
+y_full_comp_dt = merge(
+    y_complete_absorb_dt,
+    n_total_df,
+    all.x = TRUE,
+    by.x = c("G", "t"), 
+    by.y = c("G", "period")
+)
+
+y_full_comp_dt[, N_gm1 := shift(N), G]
+y_full_comp_dt[, e_y_t_treated := n/N]
+y_full_comp_dt[, e_y_gm1_treated := as.numeric(n_gm1)/as.numeric(N_gm1)]
+y_full_comp_dt
+
+
+att_g_t(df, 5, 5, verbose = TRUE )
+
+
 
 y_absorb_dt %>%
     completeDT(cols = c("G","t"), defs = c(n = NA)) %>%
     mutate(t = as.numeric(t)) %>%
-    arrange(G, t) 
+    arrange(G, t) %>%
 
 ```
 
