@@ -29,7 +29,7 @@ biters <- 200
 
 ```{r}
 # Creates simulation params
-sim_params = did::reset.sim(time.periods = 20, n = 100)
+sim_params = did::reset.sim(time.periods = 20, n = 1000)
 
 sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
     as_tibble()
@@ -362,25 +362,31 @@ if (lookup_max_error > 1e-8) {
 
 ```{r}
 # Profiling Stuff
-microbenchmark::microbenchmark(
-    map2_dfr(
+mb_results = microbenchmark::microbenchmark(
+    manual_binary = map2_dfr(
     gs_and_ts$G,
     gs_and_ts$period,
     ~att_g_t(df, g = .x, t = .y)
 ) %>%
     rename(estimate = att_g_t, group = g, time = t),
-    att_gt(
+    manual_binary_absorbing = map2_dfr(
+        gs_and_ts$G,
+        gs_and_ts$period,
+        ~ed_calculate_att_g_t(g_val = .x, t_val = .y, lookup_table = summ_group_dt, N_table = N_indiv_dt)
+    ) ,
+    cs = att_gt(
     binary_sim_df,
     yname = "Y_binary",
     tname = "period",
     gname = "G",
     idname = "id",
     xformla = ~1, 
-    print_details = TRUE,
     base_period = "varying",
     control_group = "notyettreated" ),
-    times = 1
+    times = 4
 )
+
+mb_results
 
 
 profvis(
