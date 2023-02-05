@@ -312,15 +312,17 @@ lookup_manual_fit = map2_dfr(
 ) 
 
 
-lookup_manual_fit[343, ]
-
+#' Estimate CS DiD with Binary, Absorbing Treatment
+#'
+#' Estimates CS DiD when Y data is binary and 'absorbing' (once you're vaccinated
+#' you cannot become unvaccinated).
+#'
+#' @param data Dataset to use for estimation
+#' @param y_var Integer Y variable that denotes the *first* time period an individual is vaccinated
+#' @param group_var Treatment group, in the style of CS package, must be first time period group is treated
+#' @param t_var Time period variable.
+#' @param id_var Unique ID for individuals.
 estimate_did = function(data, y_var, group_var, t_var, id_var){
-    data = df
-    y_var = "first_Y"
-    group_var = 'G' 
-    t_var = "period"
-    id_var = "id"
-
     data = as.data.table(data)
     t_levels = sort(unique(data[, get(t_var)]))
     group_levels = data[,.(G = unique(get(group_var)))][order(G), G]
