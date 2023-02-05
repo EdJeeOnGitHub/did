@@ -19,6 +19,7 @@ library(BMisc)
 library(ggplot2)
 library(gridExtra)
 library(tidyverse)
+library(furrr)
 
 ncl <- 1
 time.periods <- 4
@@ -198,20 +199,6 @@ comp_df = bind_rows(
 ```{r}
 
 
-
-att_g_t(df, 6, 3, verbose = TRUE)
-
-
-df[G == 6]
-
-test_df = df[G == 6, .(first_Y = unique(first_Y), G = unique(G)), id]
-test_df
-
-att_g_t(df, 9, 6, verbose = TRUE)
-
-
-
-
 create_indiv_first_treat_dt = function(dt, y_var, group_var, id_var) {
     summ_dt = dt[
         , 
@@ -267,17 +254,9 @@ create_indiv_per_period_dt = function(df, group_var, t_var, t_levels, group_leve
     return(full_dt)
 }
 
-N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:20, Inf), unique(df$G))
-summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
-summ_group_dt = create_group_first_treat_dt(
-    summ_indiv_dt, 
-    "first_Y", 
-    "G", 
-    c(1:20, Inf), 
-    unique(summ_indiv_dt$G))
 
 
-ed_calculate_att_g_t = function(g_val, t_val, lookup_table, N_table, verbose = FALSE) {
+calculate_att_g_t = function(g_val, t_val, lookup_table, N_table, verbose = FALSE) {
     if (t_val >= g_val) {
         lag_t_val = g_val - 1
     } else {
@@ -317,20 +296,82 @@ ed_calculate_att_g_t = function(g_val, t_val, lookup_table, N_table, verbose = F
     return(lst(g = g_val, t = t_val, att_g_t))
 }
 
+N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:20, Inf), unique(df$G))
+summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
+summ_group_dt = create_group_first_treat_dt(
+    summ_indiv_dt, 
+    "first_Y", 
+    "G", 
+    c(1:20, Inf), 
+    unique(summ_indiv_dt$G))
 
 lookup_manual_fit = map2_dfr(
     gs_and_ts$G,
     gs_and_ts$period,
-    ~ed_calculate_att_g_t(g_val = .x, t_val = .y, lookup_table = summ_group_dt, N_table = N_indiv_dt)
+    ~calculate_att_g_t(g_val = .x, t_val = .y, lookup_table = summ_group_dt, N_table = N_indiv_dt)
 ) 
 
 
+lookup_manual_fit[343, ]
+
+estimate_did = function(data, y_var, group_var, t_var, id_var){
+    data = df
+    y_var = "first_Y"
+    group_var = 'G' 
+    t_var = "period"
+    id_var = "id"
+
+    data = as.data.table(data)
+    t_levels = sort(unique(data[, get(t_var)]))
+    group_levels = data[,.(G = unique(get(group_var)))][order(G), G]
+
+    N_indiv_data = create_indiv_per_period_dt(
+        df = data,
+        group_var = group_var,
+        t_var = t_var,
+        t_levels = t_levels, 
+        group_levels = group_levels
+    )
+
+    summ_indiv_data = create_indiv_first_treat_dt(
+        dt = data,
+        y_var = y_var,
+        group_var = group_var,
+        id_var = id_var
+    )
+
+    summ_group_data = create_group_first_treat_dt(
+        dt = summ_indiv_data,
+        y_var = y_var,
+        group_var = group_var,
+        t_levels = t_levels,
+        group_levels = group_levels
+    )
+
+    gs_and_ts_we_want = CJ(group = group_levels[group_levels != 0], time = t_levels[t_levels != min(t_levels)])
+    att_estimates = future_map2_dbl(
+        gs_and_ts_we_want$group,
+        gs_and_ts_we_want$time,
+        ~calculate_att_g_t(
+            g_val = .x,
+            t_val = .y,
+            lookup_table = summ_group_data,
+            N_table = N_indiv_data
+        )$att_g_t, 
+        .progress = TRUE
+    )
+    gs_and_ts_we_want[, att_g_t := att_estimates]
+    return(gs_and_ts_we_want)
+}
+
+manual_did = estimate_did(data = df, y_var = "first_Y", group_var = 'G', t_var = "period", id_var = "id" )
+
 
 wide_lookup_comp_df = inner_join(
-    lookup_manual_fit %>% rename(manual_estimate = att_g_t),
+    manual_did %>% rename(manual_estimate = att_g_t),
     tidy_cs_fit %>%
         select(group, time, cs_estimate = estimate), 
-    by = c("g" = "group", "t" = "time")
+    by = c("group","time")
 )
 
 
