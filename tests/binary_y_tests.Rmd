@@ -16,6 +16,7 @@ source(here::here("vignettes/setup_sims.R"))
 devtools::load_all()
 # remotes::install_github("pedrohcgs/DRDID")
 library(BMisc)
+library(data.table)
 library(ggplot2)
 library(gridExtra)
 library(tidyverse)
@@ -199,102 +200,6 @@ comp_df = bind_rows(
 ```{r}
 
 
-create_indiv_first_treat_dt = function(dt, y_var, group_var, id_var) {
-    summ_dt = dt[
-        , 
-        .(
-            first_Y = unique(get(y_var)),
-            G = unique(get(group_var))
-        ), 
-        by = id_var
-        ]
-    return(summ_dt)
-}
-
-
-create_group_first_treat_dt = function(dt, y_var, group_var, t_levels, group_levels) {
-    summ_group_dt = dt[, .N, by = c(y_var, group_var)][, t := get(y_var)]
-    
-    
-    zero_t_group_dt = CJ(t = t_levels, group_var = group_levels, n_zero = 0)
-    full_group_dt = merge(
-        summ_group_dt,
-        zero_t_group_dt,
-        by.x = c("t", group_var),
-        by.y = c("t", "group_var"), 
-        all.y = TRUE
-    )
-    full_group_dt[is.na(N), N := n_zero]
-    full_group_dt[, n_zero := NULL]
-    full_cumsum_group_dt = full_group_dt[
-        order(get(group_var), t),
-        .(n = cumsum(N), t = unique(t)),
-        group_var
-    ]
-    setcolorder(full_cumsum_group_dt, c(group_var, "t", "n"))
-    full_cumsum_group_dt[, n_lag := shift(n), by = G]
-    return(full_cumsum_group_dt)
-}
-
-create_indiv_per_period_dt = function(df, group_var, t_var, t_levels, group_levels) {
-    empty_dt = CJ(G = group_levels, t = t_levels, N_0 = 0 )
-    n_indiv = df[, .N, by = c(group_var, t_var)]
-
-    full_dt = merge(
-        empty_dt,
-        n_indiv,
-        all.x = TRUE, 
-        by.y = c(group_var, t_var), 
-        by.x = c("G", "t")
-    )
-
-    full_dt[is.na(N), N := N_0]
-    full_dt[, N_0 := NULL]
-    full_dt[, N_lag := shift(N), by = group_var]
-    return(full_dt)
-}
-
-
-
-calculate_att_g_t = function(g_val, t_val, lookup_table, N_table, verbose = FALSE) {
-    if (t_val >= g_val) {
-        lag_t_val = g_val - 1
-    } else {
-        lag_t_val = t_val - 1
-    }
-    n_g_t_treated = lookup_table[t == t_val & G == g_val, n] 
-    N_g_t = N_table[t == t_val & G == g_val, N]
-    y_g_t_treated  = n_g_t_treated /  N_g_t
-
-    n_g_gm1_treated = lookup_table[t == lag_t_val & G == g_val, n] 
-    N_g_gm1 = N_table[t == lag_t_val & G == g_val, N]
-    y_g_gm1_treated = n_g_gm1_treated / N_g_gm1
-
-    n_g_t_nyt = lookup_table[t == t_val & G != g_val & (t_val < G | G == 0)][, sum(n)] 
-    N_g_t_nyt = N_table[t == t_val & G != g_val & (t_val < G | G == 0)][, sum(N)]
-    y_g_t_nyt = n_g_t_nyt / N_g_t_nyt
-
-
-    n_g_gm1_nyt = lookup_table[t == lag_t_val & G != g_val & (t_val < G | G == 0)][, sum(n)] 
-    N_g_gm1_nyt = N_table[t == lag_t_val & G != g_val & (t_val < G | G == 0)][, sum(N)]
-    y_g_gm1_nyt = n_g_gm1_nyt / N_g_gm1_nyt
-
-    att_g_t = (y_g_t_treated - y_g_gm1_treated) - (y_g_t_nyt - y_g_gm1_nyt)
-    if (verbose == TRUE) {
-        return(lst(
-            n_g_t_treated, 
-            N_g_t,
-            n_g_gm1_treated,
-            N_g_gm1,
-            n_g_t_nyt,
-            N_g_t_nyt,
-            n_g_gm1_nyt, 
-            N_g_gm1_nyt,
-            att_g_t
-            ))
-    }
-    return(lst(g = g_val, t = t_val, att_g_t))
-}
 
 N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:20, Inf), unique(df$G))
 summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
@@ -310,62 +215,6 @@ lookup_manual_fit = map2_dfr(
     gs_and_ts$period,
     ~calculate_att_g_t(g_val = .x, t_val = .y, lookup_table = summ_group_dt, N_table = N_indiv_dt)
 ) 
-
-
-#' Estimate CS DiD with Binary, Absorbing Treatment
-#'
-#' Estimates CS DiD when Y data is binary and 'absorbing' (once you're vaccinated
-#' you cannot become unvaccinated).
-#'
-#' @param data Dataset to use for estimation
-#' @param y_var Integer Y variable that denotes the *first* time period an individual is vaccinated
-#' @param group_var Treatment group, in the style of CS package, must be first time period group is treated
-#' @param t_var Time period variable.
-#' @param id_var Unique ID for individuals.
-estimate_did = function(data, y_var, group_var, t_var, id_var){
-    data = as.data.table(data)
-    t_levels = sort(unique(data[, get(t_var)]))
-    group_levels = data[,.(G = unique(get(group_var)))][order(G), G]
-
-    N_indiv_data = create_indiv_per_period_dt(
-        df = data,
-        group_var = group_var,
-        t_var = t_var,
-        t_levels = t_levels, 
-        group_levels = group_levels
-    )
-
-    summ_indiv_data = create_indiv_first_treat_dt(
-        dt = data,
-        y_var = y_var,
-        group_var = group_var,
-        id_var = id_var
-    )
-
-    summ_group_data = create_group_first_treat_dt(
-        dt = summ_indiv_data,
-        y_var = y_var,
-        group_var = group_var,
-        t_levels = t_levels,
-        group_levels = group_levels
-    )
-
-    gs_and_ts_we_want = CJ(group = group_levels[group_levels != 0], time = t_levels[t_levels != min(t_levels)])
-    att_estimates = future_map2_dbl(
-        gs_and_ts_we_want$group,
-        gs_and_ts_we_want$time,
-        ~calculate_att_g_t(
-            g_val = .x,
-            t_val = .y,
-            lookup_table = summ_group_data,
-            N_table = N_indiv_data
-        )$att_g_t, 
-        .progress = TRUE
-    )
-    gs_and_ts_we_want[, att_g_t := att_estimates]
-    return(gs_and_ts_we_want)
-}
-
 manual_did = estimate_did(data = df, y_var = "first_Y", group_var = 'G', t_var = "period", id_var = "id" )
 
 
@@ -375,7 +224,6 @@ wide_lookup_comp_df = inner_join(
         select(group, time, cs_estimate = estimate), 
     by = c("group","time")
 )
-
 
 
 wide_lookup_comp_df %>%
@@ -401,45 +249,201 @@ if (lookup_max_error > 1e-8) {
 
 ```
 
+### Bootstrap SEs
+
+
+```{r}
+
+manual_es = manual_did %>%
+    group_by(
+        event.time
+    ) %>%
+    mutate(
+        wt = pr/sum(pr)
+    ) %>%
+    summarise(
+        estimate = sum(wt*att_g_t)
+    )
+
+cs_es = aggte(cs_fit, type = "dynamic")
+tidy_cs_es = tidy(cs_es) %>% as_tibble()
+
+comp_es = bind_rows(
+    manual_es %>% mutate(type = "manual"),
+    tidy_cs_es %>% mutate(type = "cs")
+)
+
+n_es_no_match = comp_es %>%
+    select(
+        event.time, 
+        estimate, 
+        type
+    ) %>%
+    spread(
+        type, estimate
+    ) %>%
+    mutate(diff = abs(cs - manual)) %>%
+    dplyr::filter(diff > 1e-6 ) %>%
+    nrow()
+
+if (n_es_no_match > 0) {
+    stop("Event study estimates don't match")
+}
+
+library(furrr)
+plan(multicore, workers = 16)
+
+manual_boot_att_gt = bootstrap_did(
+    df = df, 
+    y_var = "first_Y", 
+    group_var = 'G', 
+    t_var = "period", 
+    id_var = "id" ,
+    B_draws = 100)
+
+manual_boot_es = manual_boot_att_gt %>%
+    group_by(B_draw) %>%
+    group_split() %>%
+    map_dfr(calculate_event_study, .id = "B_draw")
+
+resid_boot_att_gt = merge(
+    manual_boot_att_gt,
+    manual_did[, .(group, time, orig_att_g_t = att_g_t)],
+    all.x = TRUE,
+    by = c("group", "time")
+)
+n_total = df[, uniqueN(id)]
+resid_boot_att_gt[, resid := sqrt(n_total)*(orig_att_g_t - att_g_t)]
+manual_att_se = resid_boot_att_gt[
+    , 
+    .(
+        std.error = (quantile(resid, 0.75) - quantile(resid, 0.25))/(qnorm(0.75) - qnorm(0.25)), 
+        estimate = unique(orig_att_g_t)
+        ), 
+    .(group, time)
+    ]
+
+bind_rows(
+    manual_att_se %>% mutate(type = "manual"), 
+    tidy_cs_fit %>% mutate(type = "cs")
+) %>%
+    select( 
+        group, 
+        time, 
+        estimate, 
+        std.error, 
+        type
+    ) %>%
+    select(-estimate) %>%
+    spread(
+        type, std.error
+    )  %>%
+    as_tibble() %>%
+    ggplot(aes(
+        x = cs, 
+        y = manual
+    )) +
+    geom_point() +
+    geom_abline()
+
+
+manual_es_se = manual_boot_es %>%
+    group_by(
+        event.time
+    ) %>%
+    summarise(
+        conf.low = quantile(estimate, 0.025, na.rm = TRUE), 
+        conf.high = quantile(estimate, 0.975, na.rm = TRUE)
+    )  %>%
+    left_join(
+        manual_es, 
+        by = "event.time"
+    ) 
+
+comp_es_se = bind_rows(
+    manual_es_se %>% mutate(type = "manual"),
+    tidy_cs_es %>% 
+        select(estimate, conf.low = point.conf.low, conf.high = point.conf.high, event.time) %>%
+        mutate(type = "cs")
+)
+
+
+comp_es_se %>%
+    ggplot(aes(
+        x = event.time, 
+        y = estimate, 
+        ymin = conf.low, 
+        ymax = conf.high, 
+        colour = type
+    )) +
+    geom_pointrange(
+        position = position_dodge(0.5)
+    )
+manual_es_se
+
+tidy_cs_es
+
+manual_boot_es %>%
+    group_by(
+        event.time
+    ) %>%
+    summarise(
+        conf.low = quantile(estimate, 0.025), 
+        conf.high = quantile(estimate, 0.975)
+    )  %>%
+    left_join(
+        manual_es
+    ) %>%
+    ggplot(aes(
+        x = event.time, 
+        y = estimate,
+        ymin = conf.low,
+        ymax = conf.high
+    )) +
+    geom_pointrange()
+
+
+bind_rows(manual_boot_es) %>%
+    ggplot(aes(
+        x = event.time,
+        y = estimate
+    )) +
+    geom_point
+
+
+    
+
+
+```
 
 
 ```{r}
 # Profiling Stuff
 mb_results = microbenchmark::microbenchmark(
-    manual_binary = map2_dfr(
-    gs_and_ts$G,
-    gs_and_ts$period,
-    ~att_g_t(df, g = .x, t = .y)
-) %>%
-    rename(estimate = att_g_t, group = g, time = t),
-    manual_binary_absorbing = map2_dfr(
-        gs_and_ts$G,
-        gs_and_ts$period,
-        ~ed_calculate_att_g_t(g_val = .x, t_val = .y, lookup_table = summ_group_dt, N_table = N_indiv_dt)
-    ) ,
-    cs = att_gt(
-    binary_sim_df,
-    yname = "Y_binary",
-    tname = "period",
-    gname = "G",
-    idname = "id",
-    xformla = ~1, 
-    base_period = "varying",
-    control_group = "notyettreated" ),
-    times = 4
+#     manual_binary = map2_dfr(
+#     gs_and_ts$G,
+#     gs_and_ts$period,
+#     ~att_g_t(df, g = .x, t = .y)
+# ) %>%
+#     rename(estimate = att_g_t, group = g, time = t),
+    manual_did = estimate_did(data = df, y_var = "first_Y", group_var = 'G', t_var = "period", id_var = "id" ),
+    # cs = att_gt(
+    # binary_sim_df,
+    # yname = "Y_binary",
+    # tname = "period",
+    # gname = "G",
+    # idname = "id",
+    # xformla = ~1, 
+    # base_period = "varying",
+    # control_group = "notyettreated" ),
+    times = 20
 )
 
-mb_results
 
 
-profvis(
+profvis::profvis(
     {
-    manual_fit = map2_dfr(
-        gs_and_ts$G,
-        gs_and_ts$period,
-        ~att_g_t(df, g = .x, t = .y)
-    ) %>%
-        rename(estimate = att_g_t, group = g, time = t)
+    manual_did = estimate_did(data = df, y_var = "first_Y", group_var = 'G', t_var = "period", id_var = "id" )
     }
 )
 
