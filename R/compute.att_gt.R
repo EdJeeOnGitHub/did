@@ -74,13 +74,11 @@ compute.att_gt <- function(dp) {
 
   # loop over groups
   for (g in 1:nG) {
-
     # Set up .G once
     data$.G <- 1*(data[,gname] == glist[g])
 
     # loop over time periods
     for (t in 1:tlist.length) {
-
       #-----------------------------------------------------------------------------
       # Set pret
 
@@ -101,7 +99,9 @@ compute.att_gt <- function(dp) {
                             ((data[,gname] > (tlist[max(t,pret)+tfac]+anticipation)) &
                                (data[,gname] != glist[g])))
       }
-
+      # if (glist[g] == 9 & tlist[max(t, pret)] == 3){
+      #   browser()
+      # }
 
       # check if in post-treatment period
       if ((glist[g]<=tlist[(t+tfac)])) {
@@ -118,7 +118,13 @@ compute.att_gt <- function(dp) {
           # jump out of this loop
           break
         }
-      }
+      } 
+      
+      
+      # else {
+      #   browser()
+      # }
+
 
 
       #-----------------------------------------------------------------------------
@@ -132,7 +138,6 @@ compute.att_gt <- function(dp) {
           next
         }
       }
-
       # print the details of which iteration we are on
       if (print_details) {
         cat(paste("current period:", tlist[(t+tfac)]), "\n")
@@ -146,16 +151,13 @@ compute.att_gt <- function(dp) {
 
       # post treatment dummy variable
       post.treat <- 1*(glist[g] <= tlist[t+tfac])
-
       # total number of units (not just included in G or C)
       disdat <- data[data[,tname] == tlist[t+tfac] | data[,tname] == tlist[pret],]
-
 
       if (panel) {
         # transform  disdat it into "cross-sectional" data where one of the columns
         # contains the change in the outcome over time.
         disdat <- panel2cs2(disdat, yname, idname, tname, balance_panel=FALSE)
-
         # still total number of units (not just included in G or C)
         n <- nrow(disdat)
 
@@ -174,6 +176,57 @@ compute.att_gt <- function(dp) {
         G <- disdat$.G
         C <- disdat$.C
 
+#         disdat
+#         data[data$period <= 2, ]
+
+#         tlist[t+tfac]
+
+#         data[data$period == 2 & data$G == 3, ]
+#         data[data$period == 1 & data$G == 3, ]
+
+
+# a =        data[data$period == 2 & data$G != 3 & (data$G > 2 | data$G == 0), 'Y_binary']
+
+#   mean(a)
+#   mean(Ypost[G == 0])
+
+
+#         data[data$period == 2 & data$G != 3 & (data$G > 2 | data$G == 0), 'Y_binary'] %>% mean() -
+#         data[data$period == 1 & data$G != 3 & (data$G > 2 | data$G == 0), 'Y_binary'] %>% mean()
+        
+
+#         data[data$period == 2 & data$G == 3, 'Y_binary'] %>% mean() -
+#         data[data$period == 1 & data$G == 3, 'Y_binary'] %>% mean()
+
+
+#         # what we want
+#         # data[data$period == t & data$G != g & (data$G > t | data$G == 0), ]
+
+#         disdat[disdat$.G == 0, ]
+
+#         disdat %>%
+#           arrange(G)
+
+
+#         length(Ypre)
+#         length(Ypost)
+        
+#         G
+#         Ypre = disdat$.y0
+#         Ypre
+#         Ypost = disdat$.y1
+        
+
+#         Ypost[G == 1]
+#         Ypre[G == 1]
+
+#         mean(Ypost[G == 1] - Ypre[G == 1] - (Ypost[G == 0] - Ypre[G == 0]))
+
+#         Ypost[G == 0]
+#         Ypre[G == 0]
+
+#         disdat
+
         # handle pre-treatment universal base period differently
         # we need to do this because panel2cs2 just puts later period
         # in .y1, but if we are in a pre-treatment period with a universal
@@ -184,6 +237,37 @@ compute.att_gt <- function(dp) {
 
         # matrix of covariates
         covariates <- model.matrix(xformla, data=disdat)
+  #       mean(Ypost[G])
+  #       mean(Ypre[G])
+  #       mean(Ypre[!G])
+  #       mean(Ypost[!G])
+      
+  #       mean(Ypost[G] - Ypre[G])
+  #       mean(Ypost[!G] - Ypre[!G])
+
+  #       mean(Ypost[G == 1] - Ypre[G == 1]) - mean(Ypost[G == 0] - Ypre[G == 0])
+
+  #       find_n_Y(df, t = 4, g = 9)       
+
+
+  #       head(data)
+  # glist[g]
+  # tlist[t+tfac]
+
+  #     disdat
+
+  #       data[data$period == 3 & data$G == 9, 'Y_binary' ]  %>% mean() 
+  #       data[data$period == 2 & data$G == 9, 'Y_binary' ]  %>% mean()
+
+
+  #       data[data$period == 3 & data$G == 9, 'Y_binary' ]  %>% length()
+
+  #       length(Ypre[G == 0])
+
+
+  #       mean(Ypost[G == 1])
+  #       mean(Ypre[G == 1])
+
 
         #-----------------------------------------------------------------------------
         # more checks for enough observations in each group
@@ -235,6 +319,12 @@ compute.att_gt <- function(dp) {
                               i.weights=w,
                               inffunc=TRUE)
         } else if (est_method == "ipw") {
+          browser()
+          Ypost
+          Ypre
+          G
+          g
+          t
           # inverse-probability weights
           attgt <- DRDID::std_ipw_did_panel(Ypost, Ypre, G,
                                             covariates=covariates,
