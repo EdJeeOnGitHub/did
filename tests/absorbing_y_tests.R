@@ -120,8 +120,8 @@ calculate_influence_function = function(g_val,
                              lookup_indiv_table,
                              verbose = FALSE) {
 
-    # g_val = 2
-    # t_val = 17
+    # g_val = 3
+    # t_val = 3
     # lookup_table = summ_group_dt
     # N_table = N_indiv_dt
     # lookup_indiv_table = summ_indiv_dt
@@ -158,7 +158,7 @@ calculate_influence_function = function(g_val,
     lookup_indiv_table[, switcher := factor(t_val == first_Y, levels = c(TRUE, FALSE))]
     deltaY = lookup_indiv_table[, as.logical(switcher)]
 
-
+    D = lookup_indiv_table[, as.logical(treated)]
     
     eta_df = lookup_indiv_table[, table(treated, switcher)]
 
