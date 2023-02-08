@@ -2,9 +2,9 @@
 
 
 source(here::here("vignettes/setup_sims.R"))
-# devtools::load_all()
+devtools::load_all()
 # remotes::install_github("pedrohcgs/DRDID")
-library(did)
+# library(did)
 library(BMisc)
 library(data.table)
 library(ggplot2)
@@ -20,7 +20,7 @@ time.periods <- 4
 biters <- 200
 
 # Creates simulation params
-sim_params = did::reset.sim(time.periods = 20, n = 1000)
+sim_params = did::reset.sim(time.periods = 5, n = 20 )
 
 sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
     as_tibble()
@@ -41,7 +41,7 @@ binary_sim_df = sim_df %>%
 
 
 cs_fit = att_gt(
-    binary_sim_df,
+    data = binary_sim_df,
     yname = "Y_binary",
     tname = "period",
     gname = "G",
@@ -103,13 +103,13 @@ test_that("Timing okay", {
 
 
 #### Influence Function Time ####
-N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:20), unique(df$G))
+N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:5), unique(df$G))
 summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
 summ_group_dt = create_group_first_treat_dt(
     summ_indiv_dt, 
     "first_Y", 
     "G", 
-    c(1:20), 
+    c(1:5), 
     unique(summ_indiv_dt$G))
 
 
@@ -132,25 +132,6 @@ calculate_influence_function = function(g_val,
     }
 
 
-    # n_g_t_treated = lookup_table[t == t_val & G == g_val, n*w]
-    # N_g_t = N_table[t == t_val & G == g_val, N*w]
-    # y_g_t_treated  = n_g_t_treated /  N_g_t
-
-    # n_g_gm1_treated = lookup_table[t == lag_t_val & G == g_val, n*w] 
-    # N_g_gm1 = N_table[t == lag_t_val & G == g_val, N*w]
-    # y_g_gm1_treated = n_g_gm1_treated / N_g_gm1
-
-    # n_g_t_nyt = lookup_table[t == t_val & G != g_val & (t_val < G | G == 0)][, sum(n*w)] 
-    # N_g_t_nyt = N_table[t == t_val & G != g_val & (t_val < G | G == 0)][, sum(N*w)]
-    # y_g_t_nyt = n_g_t_nyt / N_g_t_nyt
-
-
-    # n_g_gm1_nyt = lookup_table[t == lag_t_val & G != g_val & (t_val < G | G == 0)][, sum(n*w)] 
-    # N_g_gm1_nyt = N_table[t == lag_t_val & G != g_val & (t_val < G | G == 0)][, sum(N*w)]
-    # y_g_gm1_nyt = n_g_gm1_nyt / N_g_gm1_nyt
-
-    # att_g_t = (y_g_t_treated - y_g_gm1_treated) - (y_g_t_nyt - y_g_gm1_nyt)
-    
     
 
     lookup_indiv_table[, treated := factor(G == t_val, levels = c(TRUE, FALSE))]
@@ -159,11 +140,38 @@ calculate_influence_function = function(g_val,
     deltaY = lookup_indiv_table[, as.logical(switcher)]
 
     D = lookup_indiv_table[, as.logical(treated)]
-    
+
+    n = nrow(lookup_indiv_table)
+
+    PS = stats::glm(D ~ 1, family = "binomial")
+    ps.fit = as.vector(PS$fitted.value)
+
+    w.treat = D
+    w.cont = ps.fit * (1 - D) / (1 - ps.fit)    
+
+    score.ps = (D - ps.fit) 
+    Hessian.ps = stats::vcov(PS)*n
+
+    asy.lin.rep.ps = score.ps %*% Hessian.ps
+
+
     eta_df = lookup_indiv_table[, table(treated, switcher)]
 
     eta_t =  eta_df["TRUE", "TRUE"] / sum(eta_df["TRUE", ])
     eta_c = eta_df["FALSE", "TRUE"] / sum(eta_df["FALSE", ])
+
+    att.treat = w.treat*deltaY
+    att.cont = w.cont*deltaY
+
+    inf.treat = (att.treat - w.treat * eta_t) / mean(w.treat)
+    inf.cont.1 = (att.cont - w.cont*eta_c)
+
+
+    M2 = mean(w.cont * (deltaY - eta_c))
+    inf.cont.2 = asy.lin.rep.ps %*% M2
+
+    inf.control = (inf.cont.1 + inf.cont.2) / mean(w.cont)
+    att.inf.func = inf.treat - inf.control
 
     inf_treat = D*(deltaY - eta_t) / pr_treat
 
@@ -172,151 +180,26 @@ calculate_influence_function = function(g_val,
 
 
     
-    inf_func = inf_treat - inf_control
+    inf_func = as.matrix(inf_treat - inf_control)
 
 
-    # inf_control
-    # unique(inf.control)
+    y1 = binary_sim_df %>%
+        dplyr::filter(period == t_val) %>%
+        pull(Y_binary)
+    y0 = binary_sim_df %>%
+        dplyr::filter(period == lag_t_val) %>%
+        pull(Y_binary)
 
-
-    # inf_treat
-    # unique(inf.treat)
-
-    # eta_control
-    # eta.cont
-
-    # # assume treat_i = 1
-    # eta.treat
-    # 1 - eta_treat / mean(w.treat)
-
-
-    # eta_control
-
-    # eta.cont
-
-
-    # lookup_table[G == g_val & t == t_val]
-
-    # (n_g_t_treated - n_g_gm1_treated) / nrow(test_indiv_dt)
-
-    # sum(deltaY[D == TRUE])
-
-
-    # sum(deltaY[D == FALSE])
-
-    ##
-
-#     test_indiv_dt = copy(summ_indiv_dt)
-#     test_indiv_dt[, treated := G == t_val ]
-#     test_indiv_dt[, .N, treated]
-
-
-
-
-#     PS = stats::glm(treated ~ 1, data = test_indiv_dt, family = "binomial")
-
-#     ps.fit = as.vector(PS$fitted.values)
-#     ps.fit = pmin(ps.fit, 1 - 1e-16)
-#     D = test_indiv_dt[, treated]
-    
-#     mean(D)
-
-#     w.treat = D
-#     n = nrow(test_indiv_dt)
-#     w.cont = ( 1 - D ) 
-
-#     deltaY = test_indiv_dt[, switcher := t_val == first_Y][, switcher]
-
-#     sum(deltaY)
-
-#     test_indiv_dt[, switcher := t_val == first_Y]
-#     test_indiv_dt[, .N, .(switcher, treated)]
-
-#     mean(att.treat)
-
-#     att.treat = w.treat * deltaY
-#     att.cont = w.cont * deltaY
-
-#     eta.treat = mean(att.treat) / mean(w.treat)
-#     eta.cont = mean(att.cont) / mean(w.cont)
-
-#     ipw.att = eta.treat - eta.cont
-
-
-#     score.ps = (D - ps.fit)
-#     Hessian.ps = stats::vcov(PS)*n
-#     asy.lin.rep.ps = score.ps %*% Hessian.ps
-
-#     inf.treat = (att.treat - w.treat * eta.treat) / mean(w.treat)
-
-#     inf.cont.1 = (att.cont - w.cont * eta.cont)
-#     M2 = mean(w.cont * (deltaY - eta.cont))
-#     inf.cont.2 = asy.lin.rep.ps %*% M2
-
-
-#     inf.control = (inf.cont.1 + 0*inf.cont.2) / mean(w.cont)
-
-
-#     att.inf.func = inf.treat - inf.control
-
-#     enframe(att.inf.func[, 1], value = "ed")  %>%
-#         group_by(ed) %>%
-#         count()
-
-# y1 = binary_sim_df %>%
-#     filter(period == t_val) %>%
-#     pull(Y_binary)
-
-# y0 = binary_sim_df %>%
-#     filter(period == t_val - 1) %>%
-#     pull(Y_binary)
-
-# D_cs = binary_sim_df %>%
-#     filter(period == t_val) %>%
-#     mutate(treated = t_val == G) %>%
-#     pull(treated)
-
-
-
-# cs_infunc = DRDID::std_ipw_did_panel(
-#     y1,
-#     y0,
-#     D_cs, 
-#     covariates = binary_sim_df %>%
-#         filter(period == t_val) %>%
-#         mutate(const = 1) %>%
-#         pull(const), 
-#     inffunc = TRUE
-# )$att.inf.func
-
-
-# all.equal(cs_infunc, att.inf.func)
-
-#    unique(att.inf.func)
-
-
-
-
-
-#     pr_treated = N_g_t + N_g_t_nyt
-
-
-#     eta_treat = (y_g_t_treated - y_g_gm1_treated) / pr_treated
-#     eta_control = (y_g_t_nyt - y_g_gm1_nyt) / (1 - pr_treated)
-
-
-
-#     lookup_table
-# eta_treat
-    
-
-#     inf_treat = (test_indiv_dt[, switcher*treated] - test_indiv_dt[, treated * eta_treat]) / pr_treated
-
-#     inf_control = (test_indiv_dt[, switcher*(1 - treated)] - test_indiv_dt[, (1 - treated)*eta_control]) / (1 - pr_treated)
-
-
-    inf_func = inf_treat - inf_control
-
+    cs_infunc = DRDID::std_ipw_did_panel(
+        y1,
+        y0,
+        D, 
+        covariates = binary_sim_df %>%
+            dplyr::filter(period == t_val) %>%
+            mutate(const = 1) %>%
+            pull(const), 
+        inffunc = TRUE
+    )$att.inf.func
 
 
     print("got here")
@@ -334,13 +217,36 @@ calculate_influence_function = function(g_val,
             att_g_t
             ))
     }
-    return(lst(g = g_val, t = t_val, inf_func))
+    return(lst(g = g_val, t = t_val, inf_func, cs_infunc, att.inf.func))
 }
 
-manual_did
-calculate_influence_function(3, 3, summ_group_dt, N_indiv_dt, summ_indiv_dt)
+binary_sim_df %>% dplyr::filter(G <= 3 | G == 0) %>% dplyr::filter(period == 3) %>% pull(Y_binary)
+binary_sim_df %>% dplyr::filter(G <= 3 | G == 0) %>% dplyr::filter(period == 2) %>% pull(Y_binary)
 
-manual_did[16]
+all.equal(binary_sim_df %>% dplyr::filter(period == 3) %>% mutate(G_1 = G == 3) %>% pull(G_1), as.logical(G))
+str(attgt)
+# this match for some but not others. Investigate ed. Also length doesn't match
+manual_did
+bind_cols(attgt$att.inf.func, calculate_influence_function(g_val = 3, t_val = 4, lookup_table = summ_group_dt, N_table = N_indiv_dt, summ_indiv_dt)$inf_func)
+
+
+binary_sim_df
+Ypost
+Ypre
+
+binary_sim_df
+
+manual_did
+
+devtools::load_all()
+cs_fit = att_gt(
+    data = binary_sim_df,
+    yname = "Y_binary",
+    tname = "period",
+    gname = "G",
+    est_method = "ipw",
+    idname = "id",
+    control_group = "notyettreated" )
 
 calculate_influence_function(
     g_val = manual_did[16, group], 
@@ -362,6 +268,120 @@ manual_infs = purrr::map2(
     )
 )
 
+
+ed_infs = map(manual_infs, "inf_func")
+cs_infs = map(manual_infs, "cs_infunc")
+new_infs = map(manual_infs, "att.inf.func")
+att_inf_output = cs_fit$inffunc
+att_infs = map(1:ncol(att_inf_output), ~as.matrix(att_inf_output[, .x]))
+
+map2(ed_infs, cs_infs, all.equal)
+map2(ed_infs, att_infs, all.equal)
+
+manual_did
+
+
+
+
+
+manual_did
+
+
+ed_infs[[2]]
+att_infs[[2]]
+
+new_infs
+
+bind_cols(a = ed_infs[[1]][, 1], b = att_infs[[1]][, 1]) %>% 
+    ggplot(aes(
+        x = a, 
+        y = b 
+    )) +
+    geom_abline() +
+    geom_point()
+
+
+cs_fit_se = mboot(att_inf_output, DIDparams = cs_fit$DIDparams)
+cs_fit_se$se[[4]]
+tidy_cs_fit
+
+
+att_infs[[1]]
+
+cs_fit$inffunc[, 1]
+
+
+ed = mboot(inf_M, DIDparams = cs_fit$DIDparams)
+
+ed$se
+
+inf_matrix = map(manual_infs, "inf_func")
+inf_M = matrix(unlist(inf_matrix), nrow = length(inf_matrix[[1]]))
+inf_M = inf_matrix[[1]]
+run_multiplier_bootstrap <- function(inf.func, biters, pl = FALSE, cores = 1) {
+  ngroups = ceiling(biters/cores)
+  chunks = rep(ngroups, cores)
+  # Round down so you end up with the right number of biters
+  chunks[1] = chunks[1] + biters - sum(chunks)
+
+  n <- nrow(inf.func)
+  parallel.function <- function(biters) {
+    BMisc::multiplier_bootstrap(inf.func, biters)
+  }
+  # From tests, this is about where it becomes worth it to parallelize
+  if(n > 2500 & pl == TRUE & cores > 1) {
+    results = parallel::mclapply(
+      chunks,
+      FUN = parallel.function,
+      mc.cores = cores
+    )
+    results = do.call(rbind, results)
+  } else {
+    results = BMisc::multiplier_bootstrap(inf.func, biters)
+  }
+  return(results)
+}
+
+bres = run_multiplier_bootstrap(inf_M, 1000, FALSE, 1)
+
+V = cov(bres)
+
+bSigma <- apply(bres, 2,
+                function(b) (quantile(b, .75, type=1, na.rm = T) -
+                                quantile(b, .25, type=1, na.rm = T))/(qnorm(.75) - qnorm(.25)))
+
+# critical value for uniform confidence band
+bT <- base::suppressWarnings(apply(bres, 1, function(b) max( abs(b/bSigma), na.rm = T)))
+bT <- bT[is.finite(bT)]
+crit.val <- quantile(bT, 1-alp, type=1, na.rm = T)
+
+se = as.numeric(bSigma) / sqrt(nrow(inf_M))
+
+se
+
+manual_did[, std.error := ed$se]
+
+wide_comp_ci_df = inner_join(
+    manual_did %>% rename(
+        manual_estimate = att_g_t, 
+        manual_std.error = std.error),
+    tidy_cs_fit %>%
+        select(group, time, cs_estimate = estimate, cs_std.error = std.error), 
+    by = c("group","time")
+)
+
+wide_comp_ci_df %>%
+    ggplot(aes(
+        x = cs_std.error, 
+        y = manual_std.error
+    )) +
+    geom_point() +
+    geom_abline()
+
+kAse
+#se <- rep(0, length(ndg.dim))
+se <- rep(NA, length(ndg.dim))
+se[ndg.dim] <- as.numeric(bSigma) / sqrt(n_clusters)
 
 stop()
 
