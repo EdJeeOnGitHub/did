@@ -430,7 +430,7 @@ compute.att_gt <- function(dp) {
                                          i.weights=w,
                                          boot=FALSE, inffunc=TRUE)
           saveRDS(
-            lst(attgt, Y, post, G),
+            lst(attgt, Y, post, G, w),
             stringr::str_glue("temp-data/rc-attgt-{g}-{t}.rds")
           )
 

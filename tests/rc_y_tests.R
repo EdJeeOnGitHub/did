@@ -146,7 +146,203 @@ summ_group_dt = create_group_first_treat_dt(
     "G", 
     c(1:time.periods), 
     unique(summ_indiv_dt$G))
+stop()
+ipw_did_rc <-function(y, post, D, covariates, i.weights = NULL,
+                      boot = FALSE, boot.type = "weighted", nboot = NULL,
+                      inffunc = FALSE){
+#   D = saved_stuff$G
+#   y = saved_stuff$Y 
+#   post = saved_stuff$post
+    D = ss_G
+    y = ss_Y
+    post = ss_post
+  covariates = NULL
+  inffunc = TRUE
+  #-----------------------------------------------------------------------------
+  # D as vector
+  D <- as.vector(D)
+  # Sample size
+  n <- length(D)
+  # y as vector
+  y <- as.vector(y)
+  # post as vector
+  post <- as.vector(post)
+  # Add constant to covariate vector
+  int.cov <- as.matrix(rep(1,n))
+  if (!is.null(covariates)){
+    if(all(as.matrix(covariates)[,1]==rep(1,n))){
+      int.cov <- as.matrix(covariates)
+    } else {
+      int.cov <- as.matrix(cbind(1, covariates))
+    }
+  }
+  # Weights
+  if(is.null(i.weights)) {
+    i.weights <- as.vector(rep(1, n))
+  } else if(min(i.weights) < 0) stop("i.weights must be non-negative")
+  #-----------------------------------------------------------------------------
+  #Pscore estimation (logit) and also its fitted values
+  PS <- suppressWarnings(stats::glm(D ~ -1 + int.cov, family = "binomial", weights = i.weights))
+  if(PS$converged == FALSE){
+    warning(" glm algorithm did not converge")
+  }
+  if(anyNA(PS$coefficients)){
+    stop("Propensity score model coefficients have NA components. \n Multicollinearity (or lack of variation) of covariates is a likely reason.")
+  }
+  ps.fit <- as.vector(PS$fitted.values)
+  # Do not divide by zero
+  ps.fit <- pmin(ps.fit, 1 - 1e-16)
+  #-----------------------------------------------------------------------------
+  #Compute IPW estimator
+  # First, the weights
+  w.treat.pre <- i.weights * D * (1 - post)
+  w.treat.post <- i.weights * D * post
+  w.cont.pre <- i.weights * ps.fit * (1 - D) * (1 - post) / (1 - ps.fit)
+  w.cont.post <- i.weights * ps.fit * (1 - D) * post/ (1 - ps.fit)
 
+  Pi.hat <- mean(i.weights * D)
+  lambda.hat <- mean(i.weights * post)
+  one.minus.lambda.hat <- mean(i.weights * (1 - post))
+
+  # Elements of the influence function (summands)
+  eta.treat.pre <- w.treat.pre * y / (Pi.hat * one.minus.lambda.hat)
+  eta.treat.post <- w.treat.post * y / (Pi.hat * lambda.hat)
+  eta.cont.pre <- w.cont.pre * y / (Pi.hat * one.minus.lambda.hat)
+  eta.cont.post <- w.cont.post * y / (Pi.hat * lambda.hat)
+
+
+
+  # Estimator of each component
+  att.treat.pre <- mean(eta.treat.pre)
+  att.treat.post <- mean(eta.treat.post)
+  att.cont.pre <- mean(eta.cont.pre)
+  att.cont.post <- mean(eta.cont.post)
+
+
+
+  # ATT estimator
+  ipw.att <- (att.treat.post - att.treat.pre) - (att.cont.post - att.cont.pre)
+  #-----------------------------------------------------------------------------
+  #get the influence function to compute standard error
+  #-----------------------------------------------------------------------------
+  # Asymptotic linear representation of logit's beta's
+  score.ps <- i.weights * (D - ps.fit) * int.cov
+  Hessian.ps <- stats::vcov(PS) * n
+  asy.lin.rep.ps <-  score.ps %*% Hessian.ps
+  #-----------------------------------------------------------------------------
+  # Influence function of the treated components
+  inf.treat.post1 <- eta.treat.post - att.treat.post
+  inf.treat.post2 <- -(i.weights * D - Pi.hat) * att.treat.post/Pi.hat
+  inf.treat.post3 <- -(i.weights * post - lambda.hat) * att.treat.post/lambda.hat
+  inf.treat.post <- inf.treat.post1 + inf.treat.post2 + inf.treat.post3
+
+  inf.treat.pre1 <- eta.treat.pre - att.treat.pre
+  inf.treat.pre2 <- -(i.weights * D - Pi.hat) * att.treat.pre/Pi.hat
+  inf.treat.pre3 <- -(i.weights * (1 - post) - one.minus.lambda.hat) *
+    att.treat.pre/one.minus.lambda.hat
+  inf.treat.pret <- inf.treat.pre1 + inf.treat.pre2 + inf.treat.pre3
+  # Now, get the influence function of control component
+  # First, terms of the inf. funct as if pscore was known
+  inf.cont.post1 <- eta.cont.post - att.cont.post
+  inf.cont.post2 <- -(i.weights * D - Pi.hat) * att.cont.post/Pi.hat
+  inf.cont.post3 <- -(i.weights * post - lambda.hat) * att.cont.post/lambda.hat
+  inf.cont.post <- inf.cont.post1 + inf.cont.post2 + inf.cont.post3
+
+  inf.cont.pre1 <- eta.cont.pre - att.cont.pre
+  inf.cont.pre2 <- -(i.weights * D - Pi.hat) * att.cont.pre/Pi.hat
+  inf.cont.pre3 <- -(i.weights * (1 - post) - one.minus.lambda.hat) *
+    att.cont.pre/one.minus.lambda.hat
+  inf.cont.pret <- inf.cont.pre1 + inf.cont.pre2 + inf.cont.pre3
+
+
+    test.inf.treat.post = inf.treat.post
+    test.inf.treat.pret = inf.treat.pret
+    test.inf.cont.post = inf.cont.post
+    test.inf.cont.pret = inf.cont.pret
+  # Estimation effect from the propensity score parametes
+  # Derivative matrix (k x 1 vector)
+  mom.logit.pre <- -eta.cont.pre * int.cov
+  mom.logit.pre <- base::colMeans(mom.logit.pre)
+
+  mom.logit.post <- -eta.cont.post * int.cov
+  mom.logit.post <- base::colMeans(mom.logit.post)
+
+  # Now the influence function related to estimation effect of pscores
+  inf.logit <- asy.lin.rep.ps %*% (mom.logit.post - mom.logit.pre)
+  #get the influence function of the DR estimator (put all pieces together)
+  att.inf.func <- (inf.treat.post - inf.treat.pret) - (inf.cont.post - inf.cont.pret) +
+    inf.logit
+  #-----------------------------------------------------------------------------
+  if (boot == FALSE) {
+    # Estimate of standard error
+    se.att <- stats::sd(att.inf.func)/sqrt(n)
+    # Estimate of upper boudary of 95% CI
+    uci <- ipw.att + 1.96 * se.att
+    # Estimate of lower doundary of 95% CI
+    lci <- ipw.att - 1.96 * se.att
+
+    #Create this null vector so we can export the bootstrap draws too.
+    ipw.boot <- NULL
+  }
+  if (boot == TRUE) {
+    if (is.null(nboot) == TRUE) nboot = 999
+    if(boot.type == "multiplier"){
+      # do multiplier bootstrap
+      ipw.boot <- mboot.did(att.inf.func, nboot)
+      # get bootstrap std errors based on IQR
+      se.att <- stats::IQR(ipw.boot) / (stats::qnorm(0.75) - stats::qnorm(0.25))
+      # get symmtric critival values
+      cv <- stats::quantile(abs(ipw.boot/se.att), probs = 0.95)
+      # Estimate of upper boudary of 95% CI
+      uci <- ipw.att + cv * se.att
+      # Estimate of lower doundary of 95% CI
+      lci <- ipw.att - cv * se.att
+    } else {
+      # do weighted bootstrap
+      ipw.boot <- unlist(lapply(1:nboot, wboot_ipw_rc,
+                                n = n, y = y, post = post, D = D, int.cov = int.cov, i.weights = i.weights))
+      # get bootstrap std errors based on IQR
+      se.att <- stats::IQR((ipw.boot - ipw.att)) / (stats::qnorm(0.75) - stats::qnorm(0.25))
+      # get symmtric critival values
+      cv <- stats::quantile(abs((ipw.boot - ipw.att)/se.att), probs = 0.95)
+      # Estimate of upper boudary of 95% CI
+      uci <- ipw.att + cv * se.att
+      # Estimate of lower doundary of 95% CI
+      lci <- ipw.att - cv * se.att
+
+    }
+
+  }
+  if(inffunc == FALSE) att.inf.func <- NULL
+  #---------------------------------------------------------------------
+  # record the call
+  call.param <- match.call()
+  # Record all arguments used in the function
+  argu <- mget(names(formals()), sys.frame(sys.nframe()))
+  boot.type <- ifelse(argu$boot.type=="multiplier", "multiplier", "weighted")
+  boot <- ifelse(argu$boot == TRUE, TRUE, FALSE)
+  argu <- list(
+    panel = FALSE,
+    normalized = FALSE,
+    boot = boot,
+    boot.type = boot.type,
+    nboot = nboot,
+    type = "ipw"
+  )
+  ret <- (list(ATT = ipw.att,
+               se = se.att,
+               uci = uci,
+               lci = lci,
+               boots = ipw.boot,
+               att.inf.func = att.inf.func,
+               call.param = call.param,
+               argu = argu))
+  # Define a new class
+  class(ret) <- "drdid"
+
+  # return the list
+  return(ret)
+}
 
 calculate_rc_influence_function = function(g_val, 
                                            t_val, 
@@ -180,7 +376,7 @@ calculate_rc_influence_function = function(g_val,
     Y_pre = subset_lookup_indiv_table[born_period < g_val, Y_pre]
 
 
-    Y = c(
+    y = c(
         Y_post,
         Y_pre
     )
@@ -191,84 +387,192 @@ calculate_rc_influence_function = function(g_val,
         subset_lookup_indiv_table[, as.logical(treated)],
         subset_lookup_indiv_table[born_period < g_val, as.logical(treated)]
         )
+    n = length(D)
+    i.weights = NULL
+    int.cov = matrix(1, n)
+ # Weights
+  if(is.null(i.weights)) {
+    i.weights <- as.vector(rep(1, n))
+  } else if(min(i.weights) < 0) stop("i.weights must be non-negative")
+  #-----------------------------------------------------------------------------
+  #Pscore estimation (logit) and also its fitted values
+  PS <- suppressWarnings(stats::glm(D ~ -1 + int.cov, family = "binomial", weights = i.weights))
+  if(PS$converged == FALSE){
+    warning(" glm algorithm did not converge")
+  }
+  if(anyNA(PS$coefficients)){
+    stop("Propensity score model coefficients have NA components. \n Multicollinearity (or lack of variation) of covariates is a likely reason.")
+  }
+  ps.fit <- as.vector(PS$fitted.values)
+  # Do not divide by zero
+  ps.fit <- pmin(ps.fit, 1 - 1e-16)
+  #-----------------------------------------------------------------------------
+  #Compute IPW estimator
+  # First, the weights
+  w.treat.pre <- i.weights * D * (1 - post)
+  w.treat.post <- i.weights * D * post
+  w.cont.pre <- i.weights * ps.fit * (1 - D) * (1 - post) / (1 - ps.fit)
+  w.cont.post <- i.weights * ps.fit * (1 - D) * post/ (1 - ps.fit)
+
+  Pi.hat <- mean(i.weights * D)
+  lambda.hat <- mean(i.weights * post)
+  one.minus.lambda.hat <- mean(i.weights * (1 - post))
+
+  # Elements of the influence function (summands)
+  eta.treat.pre <- w.treat.pre * y / (Pi.hat * one.minus.lambda.hat)
+  eta.treat.post <- w.treat.post * y / (Pi.hat * lambda.hat)
+  eta.cont.pre <- w.cont.pre * y / (Pi.hat * one.minus.lambda.hat)
+  eta.cont.post <- w.cont.post * y / (Pi.hat * lambda.hat)
+
+  # Estimator of each component
+  att.treat.pre <- mean(eta.treat.pre)
+  att.treat.post <- mean(eta.treat.post)
+  att.cont.pre <- mean(eta.cont.pre)
+  att.cont.post <- mean(eta.cont.post)
+
+  # ATT estimator
+  ipw.att <- (att.treat.post - att.treat.pre) - (att.cont.post - att.cont.pre)
+  #-----------------------------------------------------------------------------
+  #get the influence function to compute standard error
+  #-----------------------------------------------------------------------------
+  # Asymptotic linear representation of logit's beta's
+  score.ps <- i.weights * (D - ps.fit) * int.cov
+  Hessian.ps <- stats::vcov(PS) * n
+  asy.lin.rep.ps <-  score.ps %*% Hessian.ps
+  #-----------------------------------------------------------------------------
+  # Influence function of the treated components
+  inf.treat.post1 <- eta.treat.post - att.treat.post
+  inf.treat.post2 <- -(i.weights * D - Pi.hat) * att.treat.post/Pi.hat
+  inf.treat.post3 <- -(i.weights * post - lambda.hat) * att.treat.post/lambda.hat
+  inf.treat.post <- inf.treat.post1 + inf.treat.post2 + inf.treat.post3
+
+  inf.treat.pre1 <- eta.treat.pre - att.treat.pre
+  inf.treat.pre2 <- -(i.weights * D - Pi.hat) * att.treat.pre/Pi.hat
+  inf.treat.pre3 <- -(i.weights * (1 - post) - one.minus.lambda.hat) *
+    att.treat.pre/one.minus.lambda.hat
+  inf.treat.pret <- inf.treat.pre1 + inf.treat.pre2 + inf.treat.pre3
+
+  # Now, get the influence function of control component
+  # First, terms of the inf. funct as if pscore was known
+  inf.cont.post1 <- eta.cont.post - att.cont.post
+  inf.cont.post2 <- -(i.weights * D - Pi.hat) * att.cont.post/Pi.hat
+  inf.cont.post3 <- -(i.weights * post - lambda.hat) * att.cont.post/lambda.hat
+  inf.cont.post <- inf.cont.post1 + inf.cont.post2 + inf.cont.post3
+
+  inf.cont.pre1 <- eta.cont.pre - att.cont.pre
+  inf.cont.pre2 <- -(i.weights * D - Pi.hat) * att.cont.pre/Pi.hat
+  inf.cont.pre3 <- -(i.weights * (1 - post) - one.minus.lambda.hat) *
+    att.cont.pre/one.minus.lambda.hat
+  inf.cont.pret <- inf.cont.pre1 + inf.cont.pre2 + inf.cont.pre3
 
 
-    n = nrow(subset_lookup_indiv_table)
-    if (prop_score_known == FALSE){
-        PS = stats::glm(D ~ 1, family = "binomial")
-        ps.fit = as.vector(PS$fitted.value)
-        w.cont.pre = ps.fit * (1 - D) * (1 - post) / (1 - ps.fit)     
-        w.cont.post = ps.fit * (1 - D) * post / (1 - ps.fit)
+    # all.equal(inf.treat.post, test.inf.treat.post)
+    # all.equal(inf.treat.pret, test.inf.treat.pret)
+    # all.equal(inf.cont.pret, test.inf.cont.pret)
+    # all.equal(inf.cont.post, test.inf.cont.post)
 
-        w.treat.pre = D * (1 - post)
-        w.treat.post = D * post
 
-    } else {
-        w.cont.pre = (1 - D) * (1 - post) 
-        w.cont.post = (1 - D) * post
-    }
+  # Estimation effect from the propensity score parametes
+  # Derivative matrix (k x 1 vector)
+  mom.logit.pre <- -eta.cont.pre * int.cov
+  mom.logit.pre <- base::colMeans(mom.logit.pre)
+
+  mom.logit.post <- -eta.cont.post * int.cov
+  mom.logit.post <- base::colMeans(mom.logit.post)
+
+  # Now the influence function related to estimation effect of pscores
+  inf.logit <- asy.lin.rep.ps %*% (mom.logit.post - mom.logit.pre)
+  #get the influence function of the DR estimator (put all pieces together)
+  att.inf.func <- (inf.treat.post - inf.treat.pret) - (inf.cont.post - inf.cont.pret) +
+    inf.logit
+
+
+
+
+
+
+
+
+
+
+
+
+    # n = nrow(subset_lookup_indiv_table)
+    # if (prop_score_known == FALSE){
+    #     PS = stats::glm(D ~ 1, family = "binomial")
+    #     ps.fit = as.vector(PS$fitted.value)
+    #     w.cont.pre = ps.fit * (1 - D) * (1 - post) / (1 - ps.fit)     
+    #     w.cont.post = ps.fit * (1 - D) * post / (1 - ps.fit)
+
+    #     w.treat.pre = D * (1 - post)
+    #     w.treat.post = D * post
+
+    # } else {
+    #     w.cont.pre = (1 - D) * (1 - post) 
+    #     w.cont.post = (1 - D) * post
+    # }
 
     
-    w.treat.pre = D * (1 - post)
-    w.treat.post = D * post
+    # w.treat.pre = D * (1 - post)
+    # w.treat.post = D * post
 
-    Pi.hat = mean(D)
-    lambda.hat = mean(post)
-    one.minus.lambda.hat = mean(1 - post)
+    # Pi.hat = mean(D)
+    # lambda.hat = mean(post)
+    # one.minus.lambda.hat = mean(1 - post)
 
-    eta.treat.pre = w.treat.pre * Y / (Pi.hat * one.minus.lambda.hat)
-    eta.treat.post = w.treat.post * Y / (Pi.hat * lambda.hat)
+    # eta.treat.pre = w.treat.pre * Y / (Pi.hat * one.minus.lambda.hat)
+    # eta.treat.post = w.treat.post * Y / (Pi.hat * lambda.hat)
 
-    eta.cont.pre = w.cont.pre * Y / (Pi.hat * one.minus.lambda.hat)
-    eta.cont.post = w.cont.post * Y / (Pi.hat * lambda.hat)
+    # eta.cont.pre = w.cont.pre * Y / (Pi.hat * one.minus.lambda.hat)
+    # eta.cont.post = w.cont.post * Y / (Pi.hat * lambda.hat)
 
-    att.treat.pre = mean(eta.treat.pre)
-    att.treat.post = mean(eta.treat.post)
-    att.cont.pre = mean(eta.cont.pre)
-    att.cont.post = mean(eta.cont.post)
+    # att.treat.pre = mean(eta.treat.pre)
+    # att.treat.post = mean(eta.treat.post)
+    # att.cont.pre = mean(eta.cont.pre)
+    # att.cont.post = mean(eta.cont.post)
 
-    ipw.att = (att.treat.post - att.treat.pre) - (att.cont.post - att.cont.pre)
-
-
-    # Influence function of the treated components
-    inf.treat.post1 <- eta.treat.post - att.treat.post
-    inf.treat.post2 <- -( D - Pi.hat) * att.treat.post/Pi.hat
-    inf.treat.post3 <- -( post - lambda.hat) * att.treat.post/lambda.hat
-    inf.treat.post <- inf.treat.post1 + inf.treat.post2 + inf.treat.post3
-
-    inf.treat.pre1 <- eta.treat.pre - att.treat.pre
-    inf.treat.pre2 <- -(D - Pi.hat) * att.treat.pre/Pi.hat
-    inf.treat.pre3 <- -((1 - post) - one.minus.lambda.hat) * att.treat.pre/one.minus.lambda.hat
-    inf.treat.pret <- inf.treat.pre1 + inf.treat.pre2 + inf.treat.pre3
-
-    # Now, get the influence function of control component
-    # First, terms of the inf. funct as if pscore was known
-    inf.cont.post1 <- eta.cont.post - att.cont.post
-    inf.cont.post2 <- -( D - Pi.hat) * att.cont.post/Pi.hat
-    inf.cont.post3 <- -( post - lambda.hat) * att.cont.post/lambda.hat
-    inf.cont.post <- inf.cont.post1 + inf.cont.post2 + inf.cont.post3
-
-    inf.cont.pre1 <- eta.cont.pre - att.cont.pre
-    inf.cont.pre2 <- -( D - Pi.hat) * att.cont.pre/Pi.hat
-    inf.cont.pre3 <- -( (1 - post) - one.minus.lambda.hat) * att.cont.pre/one.minus.lambda.hat
-    inf.cont.pret <- inf.cont.pre1 + inf.cont.pre2 + inf.cont.pre3
+    # ipw.att = (att.treat.post - att.treat.pre) - (att.cont.post - att.cont.pre)
 
 
-    mom.logit.pre <- -eta.cont.pre 
-    mom.logit.pre <- mean(mom.logit.pre)
+    # # Influence function of the treated components
+    # inf.treat.post1 <- eta.treat.post - att.treat.post
+    # inf.treat.post2 <- -( D - Pi.hat) * att.treat.post/Pi.hat
+    # inf.treat.post3 <- -( post - lambda.hat) * att.treat.post/lambda.hat
+    # inf.treat.post <- inf.treat.post1 + inf.treat.post2 + inf.treat.post3
 
-    mom.logit.post <- -eta.cont.post 
-    mom.logit.post <- mean(mom.logit.post)
+    # inf.treat.pre1 <- eta.treat.pre - att.treat.pre
+    # inf.treat.pre2 <- -(D - Pi.hat) * att.treat.pre/Pi.hat
+    # inf.treat.pre3 <- -((1 - post) - one.minus.lambda.hat) * att.treat.pre/one.minus.lambda.hat
+    # inf.treat.pret <- inf.treat.pre1 + inf.treat.pre2 + inf.treat.pre3
 
-    score.ps <- (D - ps.fit) 
-    Hessian.ps <- stats::vcov(PS) * n
-    asy.lin.rep.ps <-  score.ps %*% Hessian.ps
+    # # Now, get the influence function of control component
+    # # First, terms of the inf. funct as if pscore was known
+    # inf.cont.post1 <- eta.cont.post - att.cont.post
+    # inf.cont.post2 <- -( D - Pi.hat) * att.cont.post/Pi.hat
+    # inf.cont.post3 <- -( post - lambda.hat) * att.cont.post/lambda.hat
+    # inf.cont.post <- inf.cont.post1 + inf.cont.post2 + inf.cont.post3
 
-    # Now the influence function related to estimation effect of pscores
-    inf.logit <- asy.lin.rep.ps %*% (mom.logit.post - mom.logit.pre)
-    #get the influence function of the DR estimator (put all pieces together)
-    att.inf.func <- (inf.treat.post - inf.treat.pret) - (inf.cont.post - inf.cont.pret) +
-        inf.logit
+    # inf.cont.pre1 <- eta.cont.pre - att.cont.pre
+    # inf.cont.pre2 <- -( D - Pi.hat) * att.cont.pre/Pi.hat
+    # inf.cont.pre3 <- -( (1 - post) - one.minus.lambda.hat) * att.cont.pre/one.minus.lambda.hat
+    # inf.cont.pret <- inf.cont.pre1 + inf.cont.pre2 + inf.cont.pre3
+
+
+    # mom.logit.pre <- -eta.cont.pre 
+    # mom.logit.pre <- mean(mom.logit.pre)
+
+    # mom.logit.post <- -eta.cont.post 
+    # mom.logit.post <- mean(mom.logit.post)
+
+    # score.ps <- (D - ps.fit) 
+    # Hessian.ps <- stats::vcov(PS) * n
+    # asy.lin.rep.ps <-  score.ps %*% Hessian.ps
+
+    # # Now the influence function related to estimation effect of pscores
+    # inf.logit <- asy.lin.rep.ps %*% (mom.logit.post - mom.logit.pre)
+    # #get the influence function of the DR estimator (put all pieces together)
+    # att.inf.func <- (inf.treat.post - inf.treat.pret) - (inf.cont.post - inf.cont.pret) +
+    #     inf.logit
 
 
 
@@ -285,6 +589,24 @@ calculate_rc_influence_function = function(g_val,
     ss_G = c(saved_stuff$G[saved_stuff$post == 1], saved_stuff$G[saved_stuff$post == 0])
     ss_Y = c(saved_stuff$Y[saved_stuff$post == 1], saved_stuff$Y[saved_stuff$post == 0])
     saved_stuff$post
+    saved_stuff$w
+
+    mean(saved_stuff$post)
+
+    length(Y_pre)
+    length(Y_post)
+
+
+    mean(post)
+
+    ss_inf_func = c(
+        saved_stuff$attgt$att.inf.func[saved_stuff$post == 1],
+        saved_stuff$attgt$att.inf.func[saved_stuff$post == 0]
+        )
+    ss_post = post
+
+
+    saved_stuff$post
         all.equal(
             ss_G,
             as.numeric(D)) %>%
@@ -292,18 +614,22 @@ calculate_rc_influence_function = function(g_val,
 
         all.equal(
             ss_Y,
-           Y 
+           y 
         ) %>%
         print()
 
         
     length(attgt$att.inf.func)
-    length(att.inf.func)
+
+
+    bind_cols(
+        a = sort(ss_inf_func), b = sort(att.inf.func[, 1])
+    )  %>%
+    head(20)
 
         all.equal(
-            attgt$att.inf.func, matrix(att.inf.func)
-        ) %>%
-        print()
+            ss_inf_func, att.inf.func[, 1]
+        ) 
 
 
     }
