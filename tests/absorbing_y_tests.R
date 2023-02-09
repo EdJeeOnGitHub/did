@@ -12,15 +12,16 @@ library(gridExtra)
 library(tidyverse)
 library(furrr)
 library(testthat)
+library(data.table)
 
 source("tests/absorbing_binary_did_functions.R")
 
 ncl <- 1
-time.periods <- 4
+time.periods <- 5
 biters <- 200
 
 # Creates simulation params
-sim_params = did::reset.sim(time.periods = 5, n = 20 )
+sim_params = did::reset.sim(time.periods = time.periods, n = 2000000 )
 
 sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
     as_tibble()
@@ -37,9 +38,10 @@ binary_sim_df = sim_df %>%
     ) %>%
     mutate(Y_binary = period >= first_Y)
 
+df = as.data.table(binary_sim_df)
 
 
-
+tictoc::tic()
 cs_fit = att_gt(
     data = binary_sim_df,
     yname = "Y_binary",
@@ -47,11 +49,12 @@ cs_fit = att_gt(
     gname = "G",
     est_method = "ipw",
     idname = "id",
+    print_details = TRUE,
     control_group = "notyettreated" )
+tictoc::toc()
 
 tidy_cs_fit = tidy(cs_fit) %>% as_tibble()
 
-df = as.data.table(binary_sim_df)
 
 manual_did = estimate_did(
     df,
@@ -102,23 +105,24 @@ test_that("Timing okay", {
 })
 
 
+
 #### Influence Function Time ####
-N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:5), unique(df$G))
+N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:time.periods), unique(df$G))
 summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
 summ_group_dt = create_group_first_treat_dt(
     summ_indiv_dt, 
     "first_Y", 
     "G", 
-    c(1:5), 
+    c(1:time.periods), 
     unique(summ_indiv_dt$G))
 
 
 calculate_influence_function = function(g_val, 
                              t_val, 
-                             lookup_table, 
-                             N_table, 
                              lookup_indiv_table,
-                             verbose = FALSE) {
+                             verbose = FALSE,
+                             check = FALSE,
+                             prop_score_known = FALSE) {
 
     # g_val = 3
     # t_val = 3
@@ -132,129 +136,113 @@ calculate_influence_function = function(g_val,
     }
 
 
-    
 
-    lookup_indiv_table[, treated := factor(G == t_val, levels = c(TRUE, FALSE))]
-    pr_treat = lookup_indiv_table[, mean(treated == TRUE)]
-    lookup_indiv_table[, switcher := factor(t_val == first_Y, levels = c(TRUE, FALSE))]
-    deltaY = lookup_indiv_table[, as.logical(switcher)]
 
-    D = lookup_indiv_table[, as.logical(treated)]
+    people_we_want = lookup_indiv_table[, G == g_val | (t_val < G | G == 0)]
+    subset_lookup_indiv_table = lookup_indiv_table[G == g_val | (t_val < G | G == 0)]
+    subset_lookup_indiv_table[, treated := factor(G == g_val, levels = c(TRUE, FALSE))]
+    pr_treat = subset_lookup_indiv_table[, mean(treated == TRUE)]
+    subset_lookup_indiv_table[, Y_post := first_Y <= t_val]
+    subset_lookup_indiv_table[, Y_pre := first_Y <= lag_t_val]
+    deltaY = subset_lookup_indiv_table[, Y_post - Y_pre]
 
-    n = nrow(lookup_indiv_table)
 
-    PS = stats::glm(D ~ 1, family = "binomial")
-    ps.fit = as.vector(PS$fitted.value)
+
+
+    n_all =  nrow(lookup_indiv_table)
+    n_subset = nrow(subset_lookup_indiv_table)
+
+    D = subset_lookup_indiv_table[, as.logical(treated)]
+
+
+
+    n = nrow(subset_lookup_indiv_table)
+    if (prop_score_known == FALSE){
+        PS = stats::glm(D ~ 1, family = "binomial")
+        ps.fit = as.vector(PS$fitted.value)
+        w.cont = ps.fit * (1 - D) / (1 - ps.fit)    
+    } else {
+        w.cont = (1 - D)
+    }
 
     w.treat = D
-    w.cont = ps.fit * (1 - D) / (1 - ps.fit)    
-
-    score.ps = (D - ps.fit) 
-    Hessian.ps = stats::vcov(PS)*n
-
-    asy.lin.rep.ps = score.ps %*% Hessian.ps
 
 
-    eta_df = lookup_indiv_table[, table(treated, switcher)]
-
-    eta_t =  eta_df["TRUE", "TRUE"] / sum(eta_df["TRUE", ])
-    eta_c = eta_df["FALSE", "TRUE"] / sum(eta_df["FALSE", ])
 
     att.treat = w.treat*deltaY
     att.cont = w.cont*deltaY
 
-    inf.treat = (att.treat - w.treat * eta_t) / mean(w.treat)
-    inf.cont.1 = (att.cont - w.cont*eta_c)
 
+    eta.treat = mean(att.treat) / mean(w.treat)
+    eta.cont = mean(att.cont) / mean(w.cont)
 
-    M2 = mean(w.cont * (deltaY - eta_c))
-    inf.cont.2 = asy.lin.rep.ps %*% M2
+    inf.treat = (att.treat - w.treat * eta.treat) / mean(w.treat)
+    inf.cont.1 = (att.cont - w.cont*eta.cont)
+
+    if (prop_score_known == FALSE) {
+        score.ps = (D - ps.fit)
+        Hessian.ps = stats::vcov(PS) * n
+        asy.lin.rep.ps = score.ps %*% Hessian.ps
+        M2 = mean(w.cont * (deltaY - eta.cont))
+        inf.cont.2 = asy.lin.rep.ps %*% M2
+    } else {
+        inf.cont.2 = matrix(0, n_subset)
+    }
 
     inf.control = (inf.cont.1 + inf.cont.2) / mean(w.cont)
     att.inf.func = inf.treat - inf.control
+    att.inf.func = att.inf.func[, 1]
 
-    inf_treat = D*(deltaY - eta_t) / pr_treat
-
-    inf_control =  (1 - D)*(deltaY - eta_c) / (1 - pr_treat) 
-
-
-
+    rowids = which(people_we_want == TRUE, arr.ind = FALSE, useNames = TRUE)
+    names(att.inf.func) = rowids
     
-    inf_func = as.matrix(inf_treat - inf_control)
+    if (check == TRUE) {
+
+    saved_stuff = read_rds(stringr::str_glue("temp-data/attgt-{g_val - 1}-{t_val - 1}.rds"))
+
+    attgt = saved_stuff$attgt
 
 
-    y1 = binary_sim_df %>%
-        dplyr::filter(period == t_val) %>%
-        pull(Y_binary)
-    y0 = binary_sim_df %>%
-        dplyr::filter(period == lag_t_val) %>%
-        pull(Y_binary)
+        all.equal(
+            saved_stuff$G,
+            subset_lookup_indiv_table[, as.numeric(G == g_val)]) %>%
+            print()
 
-    cs_infunc = DRDID::std_ipw_did_panel(
-        y1,
-        y0,
-        D, 
-        covariates = binary_sim_df %>%
-            dplyr::filter(period == t_val) %>%
-            mutate(const = 1) %>%
-            pull(const), 
-        inffunc = TRUE
-    )$att.inf.func
+        all.equal(
+            saved_stuff$Ypost,
+            subset_lookup_indiv_table[, Y_post]
+        ) %>%
+        print()
+
+        all.equal(
+            saved_stuff$Ypre,
+            subset_lookup_indiv_table[, Y_pre]
+        ) %>%
+        print()
+        
+
+        all.equal(
+            saved_stuff$Ypost - saved_stuff$Ypre, 
+            as.numeric(deltaY)
+        ) %>%
+        print()
+
+        all.equal(
+            attgt$att.inf.func[, 1], att.inf.func
+        ) %>%
+        print()
 
 
-    print("got here")
-
-    if (verbose == TRUE) {
-        return(lst(
-            n_g_t_treated, 
-            N_g_t,
-            n_g_gm1_treated,
-            N_g_gm1,
-            n_g_t_nyt,
-            N_g_t_nyt,
-            n_g_gm1_nyt, 
-            N_g_gm1_nyt,
-            att_g_t
-            ))
     }
-    return(lst(g = g_val, t = t_val, inf_func, cs_infunc, att.inf.func))
+
+
+
+    full_inf_func = matrix(0, nrow(lookup_indiv_table))
+    full_inf_func[rowids] = att.inf.func
+
+    return(lst(g = g_val, t = t_val, full_inf_func, n_adjustment = n_all/n_subset))
 }
 
-binary_sim_df %>% dplyr::filter(G <= 3 | G == 0) %>% dplyr::filter(period == 3) %>% pull(Y_binary)
-binary_sim_df %>% dplyr::filter(G <= 3 | G == 0) %>% dplyr::filter(period == 2) %>% pull(Y_binary)
-
-all.equal(binary_sim_df %>% dplyr::filter(period == 3) %>% mutate(G_1 = G == 3) %>% pull(G_1), as.logical(G))
-str(attgt)
-# this match for some but not others. Investigate ed. Also length doesn't match
-manual_did
-bind_cols(attgt$att.inf.func, calculate_influence_function(g_val = 3, t_val = 4, lookup_table = summ_group_dt, N_table = N_indiv_dt, summ_indiv_dt)$inf_func)
-
-
-binary_sim_df
-Ypost
-Ypre
-
-binary_sim_df
-
-manual_did
-
-devtools::load_all()
-cs_fit = att_gt(
-    data = binary_sim_df,
-    yname = "Y_binary",
-    tname = "period",
-    gname = "G",
-    est_method = "ipw",
-    idname = "id",
-    control_group = "notyettreated" )
-
-calculate_influence_function(
-    g_val = manual_did[16, group], 
-    t_val = manual_did[16, time], 
-    lookup_table = summ_group_dt,
-    N_table = N_indiv_dt,
-    summ_indiv_dt
-)
 
 manual_infs = purrr::map2(
     manual_did$g, 
@@ -262,62 +250,133 @@ manual_infs = purrr::map2(
     ~calculate_influence_function(
         g_val = .x, 
         t_val = .y, 
-        lookup_table = summ_group_dt,
-        N_table = N_indiv_dt,
-        summ_indiv_dt
+        summ_indiv_dt,
+        prop_score_known = TRUE
     )
 )
 
-
-ed_infs = map(manual_infs, "inf_func")
-cs_infs = map(manual_infs, "cs_infunc")
-new_infs = map(manual_infs, "att.inf.func")
+new_infs = map(manual_infs, "full_inf_func")
+new_adjustment = map(manual_infs, "n_adjustment")
+new_infs = map2(new_infs, new_adjustment, ~.x*.y)
 att_inf_output = cs_fit$inffunc
 att_infs = map(1:ncol(att_inf_output), ~as.matrix(att_inf_output[, .x]))
 
-map2(ed_infs, cs_infs, all.equal)
-map2(ed_infs, att_infs, all.equal)
 
-manual_did
-
-
-
-
-
-manual_did
+test_that("Influence functions match", {
+    map2(new_infs, att_infs, all.equal) %>%
+    map(expect_true)
+}
+)
 
 
-ed_infs[[2]]
-att_infs[[2]]
+compare_timings = TRUE
 
-new_infs
+if (compare_timings) {
+comp_mb = microbenchmark::microbenchmark(
+    # cs_fit = att_gt(
+    #     data = binary_sim_df,
+    #     yname = "Y_binary",
+    #     tname = "period",
+    #     gname = "G",
+    #     est_method = "ipw",
+    #     idname = "id",
+    #     control_group = "notyettreated" ),
+    manual_did = estimate_did(
+        df,
+        y_var = "first_Y",
+        group_var = "G",
+        t_var = "period",
+        id_var = "id"
+    ), 
+    manual_inf = map2(
+        manual_did$g, 
+        manual_did$t,
+        ~calculate_influence_function(
+            g_val = .x, 
+            t_val = .y, 
+            summ_indiv_dt
+        )
+    ),
+    manual_no_probit_inf = map2(
+        manual_did$g, 
+        manual_did$t,
+        ~calculate_influence_function(
+            g_val = .x, 
+            t_val = .y, 
+            summ_indiv_dt, 
+            prop_score_known = TRUE
+        )
+    ),
+    times = 2
+)
+comp_mb
 
-bind_cols(a = ed_infs[[1]][, 1], b = att_infs[[1]][, 1]) %>% 
-    ggplot(aes(
-        x = a, 
-        y = b 
-    )) +
-    geom_abline() +
-    geom_point()
+n_current = manual_did %>%
+    nrow()
+n_zm = CJ(groups = 1:30, periods = 1:52) %>% nrow()
+
+summ_time_df = comp_mb %>% 
+    as_tibble() %>%
+    mutate(
+        seconds = time / 1e9
+    ) %>%
+    group_by(
+        expr
+    ) %>%
+    summarise(
+        mean_time = mean(seconds)
+    ) %>%
+    mutate(
+        estimated_time_seconds = mean_time*n_zm/n_current, 
+        estimated_time_minutes = estimated_time_seconds/60
+    )
+summ_time_df
+
+}
+stop()
 
 
-cs_fit_se = mboot(att_inf_output, DIDparams = cs_fit$DIDparams)
-cs_fit_se$se[[4]]
-tidy_cs_fit
 
 
-att_infs[[1]]
 
-cs_fit$inffunc[, 1]
+str(new_infs)
+
+manual_inf_M = matrix(unlist(new_infs), nrow = nrow(new_infs[[1]]))
+
+# ed = mboot()
 
 
-ed = mboot(inf_M, DIDparams = cs_fit$DIDparams)
+# profvis::profvis(
+#     map2(
+#         manual_did$g, 
+#         manual_did$t,
+#         ~calculate_influence_function(
+#             g_val = .x, 
+#             t_val = .y, 
+#             summ_indiv_dt
+#         )
+#     )
+# )
 
-ed$se
 
-inf_matrix = map(manual_infs, "inf_func")
-inf_M = matrix(unlist(inf_matrix), nrow = length(inf_matrix[[1]]))
-inf_M = inf_matrix[[1]]
+
+# cs_fit_se = mboot(att_inf_output, DIDparams = cs_fit$DIDparams)
+# cs_fit_se$se[[4]]
+# tidy_cs_fit
+
+
+# att_infs[[1]]
+
+# cs_fit$inffunc[, 1]
+
+
+# ed = mboot(inf_M, DIDparams = cs_fit$DIDparams)
+
+# ed$se
+
+# inf_matrix = map(manual_infs, "inf_func")
+# inf_M = matrix(unlist(inf_matrix), nrow = length(inf_matrix[[1]]))
+# inf_M = inf_matrix[[1]]
 run_multiplier_bootstrap <- function(inf.func, biters, pl = FALSE, cores = 1) {
   ngroups = ceiling(biters/cores)
   chunks = rep(ngroups, cores)
@@ -342,7 +401,8 @@ run_multiplier_bootstrap <- function(inf.func, biters, pl = FALSE, cores = 1) {
   return(results)
 }
 
-bres = run_multiplier_bootstrap(inf_M, 1000, FALSE, 1)
+bres = run_multiplier_bootstrap(matrix(manual_inf_M[, 1]), 1000, pl = TRUE, 8)
+
 
 V = cov(bres)
 
