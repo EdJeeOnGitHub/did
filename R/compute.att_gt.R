@@ -319,6 +319,7 @@ compute.att_gt <- function(dp) {
                               i.weights=w,
                               inffunc=TRUE)
         } else if (est_method == "ipw") {
+          print("UHOH")
           # browser()
           # inverse-probability weights
           attgt <- DRDID::std_ipw_did_panel(Ypost, Ypre, G,
@@ -420,6 +421,7 @@ compute.att_gt <- function(dp) {
                               i.weights=w,
                               inffunc=TRUE)
         } else if (est_method == "ipw") {
+          print("I'm here")
           # inverse-probability weights
           attgt <- DRDID::std_ipw_did_rc(y=Y,
                                          post=post,
@@ -427,6 +429,11 @@ compute.att_gt <- function(dp) {
                                          covariates=covariates,
                                          i.weights=w,
                                          boot=FALSE, inffunc=TRUE)
+          saveRDS(
+            lst(attgt, Y, post, G),
+            stringr::str_glue("temp-data/rc-attgt-{g}-{t}.rds")
+          )
+
         } else if (est_method == "reg") {
           # regression
           attgt <- DRDID::reg_did_rc(y=Y,

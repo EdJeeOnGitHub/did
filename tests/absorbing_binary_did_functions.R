@@ -73,15 +73,32 @@ estimate_did = function(data,
     return(gs_and_ts_we_want)
 }
 
-create_indiv_first_treat_dt = function(dt, y_var, group_var, id_var) {
-    summ_dt = dt[
-        , 
-        .(
-            first_Y = unique(get(y_var)),
-            G = unique(get(group_var))
-        ), 
-        by = id_var
-        ]
+create_indiv_first_treat_dt = function(dt, 
+                                       y_var, 
+                                       group_var, 
+                                       id_var,
+                                       birth_var = NULL) {
+    if (!is.null(birth_var)) {
+        summ_dt = dt[
+            , 
+            .(
+                first_Y = unique(get(y_var)),
+                G = unique(get(group_var)), 
+                born_period = unique(get(birth_var))
+            ), 
+            by = id_var
+            ]
+    } else {
+        summ_dt = dt[
+            , 
+            .(
+                first_Y = unique(get(y_var)),
+                G = unique(get(group_var))
+            ), 
+            by = id_var
+            ]
+
+    }
     return(summ_dt)
 }
 

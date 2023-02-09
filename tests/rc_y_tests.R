@@ -1,3 +1,4 @@
+
 source(here::here("vignettes/setup_sims.R"))
 devtools::load_all()
 # remotes::install_github("pedrohcgs/DRDID")
@@ -20,15 +21,18 @@ biters <- 200
 # Creates simulation params
 sim_params = did::reset.sim(
     time.periods = time.periods, 
-    n = 20000)
+    n = 20
+)
 
-sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
+sim_df = did::build_sim_dataset(
+    sp_list = sim_params, 
+    panel = TRUE) %>%
     as_tibble()
 
 
 binary_sim_df = sim_df %>%
     group_by(G) %>%
-    mutate(Y_above = Y > quantile(Y, 0.15)) %>%
+    mutate(Y_above = Y > quantile(Y, 0.333)) %>%
     ungroup() %>%
     group_by(id) %>%
     mutate(
@@ -37,18 +41,35 @@ binary_sim_df = sim_df %>%
     ) %>%
     mutate(Y_binary = period >= first_Y)
 
-df = as.data.table(binary_sim_df)
+# introduce births!
+binary_sim_df = binary_sim_df %>%
+    group_by(id) %>%
+    mutate(
+        birth_period = round(runif(1, 0, first_Y))
+    )  %>%
+    ungroup()
 
+
+rc_sim_df = binary_sim_df %>%
+    dplyr::filter(period >= birth_period)
+
+
+nrow(rc_sim_df)
+
+df = as.data.table(rc_sim_df)
+
+df[, .(N = uniqueN(id)), birth_period][order(birth_period)]
 
 tictoc::tic()
 cs_fit = att_gt(
-    data = binary_sim_df,
+    data = rc_sim_df,
     yname = "Y_binary",
     tname = "period",
     gname = "G",
     est_method = "ipw",
     idname = "id",
     print_details = TRUE,
+    panel = FALSE,
     control_group = "notyettreated" )
 tictoc::toc()
 
@@ -71,16 +92,19 @@ comp_df = inner_join(
     by = c("group","time")
 )
 
-# comp_df %>%
-#     ggplot(aes(
-#         x = cs_estimate,
-#         y = manual_estimate
-#     )) +
-#     geom_point() +
-#     geom_abline(linetype = "longdash") +
-#     theme_bw()
+comp_df
+
+comp_df %>%
+    ggplot(aes(
+        x = cs_estimate,
+        y = manual_estimate
+    )) +
+    geom_point() +
+    geom_abline(linetype = "longdash") +
+    theme_bw()
 
 lookup_max_error = comp_df %>%
+    dplyr::filter(!(is.na(manual_estimate) & is.na(cs_estimate))) %>%
     mutate(error = abs(manual_estimate - cs_estimate)) %>%
     summarise(max_error = max(error)) %>%
     pull()
@@ -107,7 +131,15 @@ test_that("Timing okay", {
 
 #### Influence Function Time ####
 N_indiv_dt = create_indiv_per_period_dt(df, "G", "period", c(1:time.periods), unique(df$G))
-summ_indiv_dt = create_indiv_first_treat_dt(df, "first_Y", "G", "id")
+
+summ_indiv_dt = create_indiv_first_treat_dt(
+    dt = df, 
+    y_var = "first_Y", 
+    group_var = "G", 
+    id_var = "id", 
+    birth_var = "birth_period"
+)
+
 summ_group_dt = create_group_first_treat_dt(
     summ_indiv_dt, 
     "first_Y", 
@@ -116,18 +148,18 @@ summ_group_dt = create_group_first_treat_dt(
     unique(summ_indiv_dt$G))
 
 
-calculate_influence_function = function(g_val, 
-                                        t_val, 
-                                        lookup_indiv_table,
-                                        verbose = FALSE,
-                                        check = FALSE,
-                                        prop_score_known = FALSE) {
+calculate_rc_influence_function = function(g_val, 
+                                           t_val, 
+                                           lookup_indiv_table,
+                                           verbose = FALSE,
+                                           check = FALSE,
+                                           prop_score_known = FALSE) {
 
-    # g_val = 3
-    # t_val = 3
-    # lookup_table = summ_group_dt
-    # N_table = N_indiv_dt
-    # lookup_indiv_table = summ_indiv_dt
+    g_val = 3
+    t_val = 3
+    lookup_table = summ_group_dt
+    N_table = N_indiv_dt
+    lookup_indiv_table = summ_indiv_dt
     if (t_val >= g_val) {
         lag_t_val = g_val - 1
     } else {
@@ -136,98 +168,140 @@ calculate_influence_function = function(g_val,
 
 
 
-
-    people_we_want = lookup_indiv_table[, G == g_val | (t_val < G | G == 0)]
-    subset_lookup_indiv_table = lookup_indiv_table[G == g_val | (t_val < G | G == 0)]
+    people_we_want = lookup_indiv_table[, (G == g_val | (t_val < G | G == 0)) & born_period <= t_val]
+    subset_lookup_indiv_table = lookup_indiv_table[people_we_want]
     subset_lookup_indiv_table[, treated := factor(G == g_val, levels = c(TRUE, FALSE))]
-    pr_treat = subset_lookup_indiv_table[, mean(treated == TRUE)]
     subset_lookup_indiv_table[, Y_post := first_Y <= t_val]
     subset_lookup_indiv_table[, Y_pre := first_Y <= lag_t_val]
     deltaY = subset_lookup_indiv_table[, Y_post - Y_pre]
 
 
+    Y_post = subset_lookup_indiv_table[, Y_post]
+    Y_pre = subset_lookup_indiv_table[born_period < g_val, Y_pre]
 
 
-    n_all =  nrow(lookup_indiv_table)
-    n_subset = nrow(subset_lookup_indiv_table)
+    Y = c(
+        Y_post,
+        Y_pre
+    )
 
-    D = subset_lookup_indiv_table[, as.logical(treated)]
+    post = c(rep(1, length(Y_post)), rep(0, length(Y_pre)))
 
+    D = c(
+        subset_lookup_indiv_table[, as.logical(treated)],
+        subset_lookup_indiv_table[born_period < g_val, as.logical(treated)]
+        )
 
 
     n = nrow(subset_lookup_indiv_table)
     if (prop_score_known == FALSE){
         PS = stats::glm(D ~ 1, family = "binomial")
         ps.fit = as.vector(PS$fitted.value)
-        w.cont = ps.fit * (1 - D) / (1 - ps.fit)    
+        w.cont.pre = ps.fit * (1 - D) * (1 - post) / (1 - ps.fit)     
+        w.cont.post = ps.fit * (1 - D) * post / (1 - ps.fit)
+
+        w.treat.pre = D * (1 - post)
+        w.treat.post = D * post
+
     } else {
-        w.cont = (1 - D)
+        w.cont.pre = (1 - D) * (1 - post) 
+        w.cont.post = (1 - D) * post
     }
 
-    w.treat = D
+    
+    w.treat.pre = D * (1 - post)
+    w.treat.post = D * post
+
+    Pi.hat = mean(D)
+    lambda.hat = mean(post)
+    one.minus.lambda.hat = mean(1 - post)
+
+    eta.treat.pre = w.treat.pre * Y / (Pi.hat * one.minus.lambda.hat)
+    eta.treat.post = w.treat.post * Y / (Pi.hat * lambda.hat)
+
+    eta.cont.pre = w.cont.pre * Y / (Pi.hat * one.minus.lambda.hat)
+    eta.cont.post = w.cont.post * Y / (Pi.hat * lambda.hat)
+
+    att.treat.pre = mean(eta.treat.pre)
+    att.treat.post = mean(eta.treat.post)
+    att.cont.pre = mean(eta.cont.pre)
+    att.cont.post = mean(eta.cont.post)
+
+    ipw.att = (att.treat.post - att.treat.pre) - (att.cont.post - att.cont.pre)
+
+
+    # Influence function of the treated components
+    inf.treat.post1 <- eta.treat.post - att.treat.post
+    inf.treat.post2 <- -( D - Pi.hat) * att.treat.post/Pi.hat
+    inf.treat.post3 <- -( post - lambda.hat) * att.treat.post/lambda.hat
+    inf.treat.post <- inf.treat.post1 + inf.treat.post2 + inf.treat.post3
+
+    inf.treat.pre1 <- eta.treat.pre - att.treat.pre
+    inf.treat.pre2 <- -(D - Pi.hat) * att.treat.pre/Pi.hat
+    inf.treat.pre3 <- -((1 - post) - one.minus.lambda.hat) * att.treat.pre/one.minus.lambda.hat
+    inf.treat.pret <- inf.treat.pre1 + inf.treat.pre2 + inf.treat.pre3
+
+    # Now, get the influence function of control component
+    # First, terms of the inf. funct as if pscore was known
+    inf.cont.post1 <- eta.cont.post - att.cont.post
+    inf.cont.post2 <- -( D - Pi.hat) * att.cont.post/Pi.hat
+    inf.cont.post3 <- -( post - lambda.hat) * att.cont.post/lambda.hat
+    inf.cont.post <- inf.cont.post1 + inf.cont.post2 + inf.cont.post3
+
+    inf.cont.pre1 <- eta.cont.pre - att.cont.pre
+    inf.cont.pre2 <- -( D - Pi.hat) * att.cont.pre/Pi.hat
+    inf.cont.pre3 <- -( (1 - post) - one.minus.lambda.hat) * att.cont.pre/one.minus.lambda.hat
+    inf.cont.pret <- inf.cont.pre1 + inf.cont.pre2 + inf.cont.pre3
+
+
+    mom.logit.pre <- -eta.cont.pre 
+    mom.logit.pre <- mean(mom.logit.pre)
+
+    mom.logit.post <- -eta.cont.post 
+    mom.logit.post <- mean(mom.logit.post)
+
+    score.ps <- (D - ps.fit) 
+    Hessian.ps <- stats::vcov(PS) * n
+    asy.lin.rep.ps <-  score.ps %*% Hessian.ps
+
+    # Now the influence function related to estimation effect of pscores
+    inf.logit <- asy.lin.rep.ps %*% (mom.logit.post - mom.logit.pre)
+    #get the influence function of the DR estimator (put all pieces together)
+    att.inf.func <- (inf.treat.post - inf.treat.pret) - (inf.cont.post - inf.cont.pret) +
+        inf.logit
 
 
 
-    att.treat = w.treat*deltaY
-    att.cont = w.cont*deltaY
-
-
-    eta.treat = mean(att.treat) / mean(w.treat)
-    eta.cont = mean(att.cont) / mean(w.cont)
-
-    inf.treat = (att.treat - w.treat * eta.treat) / mean(w.treat)
-    inf.cont.1 = (att.cont - w.cont*eta.cont)
-
-    if (prop_score_known == FALSE) {
-        score.ps = (D - ps.fit)
-        Hessian.ps = stats::vcov(PS) * n
-        asy.lin.rep.ps = score.ps %*% Hessian.ps
-        M2 = mean(w.cont * (deltaY - eta.cont))
-        inf.cont.2 = asy.lin.rep.ps %*% M2
-    } else {
-        inf.cont.2 = matrix(0, n_subset)
-    }
-
-    inf.control = (inf.cont.1 + inf.cont.2) / mean(w.cont)
-    att.inf.func = inf.treat - inf.control
-    att.inf.func = att.inf.func[, 1]
-
-    rowids = which(people_we_want == TRUE, arr.ind = FALSE, useNames = TRUE)
-    names(att.inf.func) = rowids
+    # rowids = which(people_we_want == TRUE, arr.ind = FALSE, useNames = TRUE)
+    # names(att.inf.func) = rowids
     
     if (check == TRUE) {
 
-    saved_stuff = read_rds(stringr::str_glue("temp-data/attgt-{g_val - 1}-{t_val - 1}.rds"))
+    saved_stuff = read_rds(stringr::str_glue("temp-data/rc-attgt-{g_val - 1}-{t_val - 1}.rds"))
 
     attgt = saved_stuff$attgt
 
-
+    saved_stuff$post
+    ss_G = c(saved_stuff$G[saved_stuff$post == 1], saved_stuff$G[saved_stuff$post == 0])
+    ss_Y = c(saved_stuff$Y[saved_stuff$post == 1], saved_stuff$Y[saved_stuff$post == 0])
+    saved_stuff$post
         all.equal(
-            saved_stuff$G,
-            subset_lookup_indiv_table[, as.numeric(G == g_val)]) %>%
+            ss_G,
+            as.numeric(D)) %>%
             print()
 
         all.equal(
-            saved_stuff$Ypost,
-            subset_lookup_indiv_table[, Y_post]
+            ss_Y,
+           Y 
         ) %>%
         print()
 
-        all.equal(
-            saved_stuff$Ypre,
-            subset_lookup_indiv_table[, Y_pre]
-        ) %>%
-        print()
         
+    length(attgt$att.inf.func)
+    length(att.inf.func)
 
         all.equal(
-            saved_stuff$Ypost - saved_stuff$Ypre, 
-            as.numeric(deltaY)
-        ) %>%
-        print()
-
-        all.equal(
-            attgt$att.inf.func[, 1], att.inf.func
+            attgt$att.inf.func, matrix(att.inf.func)
         ) %>%
         print()
 
@@ -236,10 +310,10 @@ calculate_influence_function = function(g_val,
 
 
 
-    full_inf_func = matrix(0, nrow(lookup_indiv_table))
-    full_inf_func[rowids] = att.inf.func
+    # full_inf_func = matrix(0, nrow(lookup_indiv_table))
+    # full_inf_func[rowids] = att.inf.func
 
-    return(lst(g = g_val, t = t_val, full_inf_func, n_adjustment = n_all/n_subset))
+    return(lst(g = g_val, t = t_val, att.inf.func))
 }
 
 manual_infs = purrr::map2(
