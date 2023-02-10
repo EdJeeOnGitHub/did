@@ -21,7 +21,7 @@ biters <- 200
 # Creates simulation params
 sim_params = did::reset.sim(
     time.periods = time.periods, 
-    n = 20
+    n = 2000
 )
 
 sim_df = did::build_sim_dataset(
@@ -139,7 +139,6 @@ summ_indiv_dt = create_indiv_first_treat_dt(
     id_var = "id", 
     birth_var = "birth_period"
 )
-
 summ_group_dt = create_group_first_treat_dt(
     summ_indiv_dt, 
     "first_Y", 
@@ -150,15 +149,17 @@ summ_group_dt = create_group_first_treat_dt(
 calculate_rc_influence_function = function(g_val, 
                                            t_val, 
                                            lookup_indiv_table,
+                                           row_id_var,
                                            verbose = FALSE,
                                            check = FALSE,
                                            prop_score_known = FALSE) {
 
-    # g_val = 3
-    # t_val = 3
+    # g_val = 5
+    # t_val = 5
     # lookup_table = summ_group_dt
     # N_table = N_indiv_dt
     # lookup_indiv_table = summ_indiv_dt
+    # id_var = "id"
     if (t_val >= g_val) {
         lag_t_val = g_val - 1
     } else {
@@ -178,7 +179,7 @@ calculate_rc_influence_function = function(g_val,
     Y_post = subset_lookup_indiv_table[, Y_post]
     Y_pre = subset_lookup_indiv_table[born_period < g_val, Y_pre]
 
-
+    rc_ids = c(subset_lookup_indiv_table[, get(row_id_var)], subset_lookup_indiv_table[born_period < g_val, get(row_id_var)])
     y = c(
         Y_post,
         Y_pre
@@ -261,9 +262,7 @@ calculate_rc_influence_function = function(g_val,
   att.inf.func <- inf.treat - inf.cont
 
 
-
-
-
+names(att.inf.func) = rc_ids
     
     if (check == TRUE) {
 
@@ -320,14 +319,13 @@ calculate_rc_influence_function = function(g_val,
 
     }
 
+    full_inf_func = matrix(0, nrow(lookup_indiv_table))
+    full_inf_func[rc_ids] = att.inf.func
+    n_all = nrow(lookup_indiv_table)
+    n_subset = nrow(subset_lookup_indiv_table)
 
-
-    # full_inf_func = matrix(0, nrow(lookup_indiv_table))
-    # full_inf_func[rowids] = att.inf.func
-
-    return(lst(g = g_val, t = t_val, att.inf.func))
+    return(lst(g = g_val, t = t_val, full_inf_func, n_adjustment = n_all/n_subset))
 }
-
 manual_infs = purrr::map2(
     manual_did$g, 
     manual_did$t,
@@ -335,35 +333,26 @@ manual_infs = purrr::map2(
         g_val = .x, 
         t_val = .y, 
         summ_indiv_dt,
+        row_id_var = "rowid",
         prop_score_known = TRUE
     )
 )
-
-new_infs = map(manual_infs, "att.inf.func")
-# new_adjustment = map(manual_infs, "n_adjustment")
-# new_infs = map2(new_infs, new_adjustment, ~.x*.y)
-att_inf_output = cs_fit$inffunc
-att_infs = map(1:ncol(att_inf_output), ~as.matrix(att_inf_output[, .x]))
-
-
-test_that("Influence functions match", {
-    map2(new_infs, att_infs, all.equal) %>%
-    map(expect_true)
-}
-)
-
-bind_cols(new_infs[[1]], att_infs[[1]])
+new_infs = map(manual_infs, "full_inf_func")
+new_adjustment = map(manual_infs, "n_adjustment")
+new_infs = map2(new_infs, new_adjustment, ~.x*.y)
 
 compare_timings = TRUE
 
 if (compare_timings) {
 comp_mb = microbenchmark::microbenchmark(
     # cs_fit = att_gt(
-    #     data = binary_sim_df,
+    #     data = rc_sim_df,
     #     yname = "Y_binary",
     #     tname = "period",
     #     gname = "G",
+    #     panel = FALSE,
     #     est_method = "ipw",
+    #     bstrap = FALSE,
     #     idname = "id",
     #     control_group = "notyettreated" ),
     manual_did = estimate_did(
@@ -376,92 +365,34 @@ comp_mb = microbenchmark::microbenchmark(
     manual_inf = map2(
         manual_did$g, 
         manual_did$t,
-        ~calculate_influence_function(
+        ~calculate_rc_influence_function(
             g_val = .x, 
             t_val = .y, 
+            row_id_var = "rowid",
             summ_indiv_dt
         )
     ),
-    manual_no_probit_inf = map2(
-        manual_did$g, 
-        manual_did$t,
-        ~calculate_influence_function(
-            g_val = .x, 
-            t_val = .y, 
-            summ_indiv_dt, 
-            prop_score_known = TRUE
-        )
-    ),
+    # manual_no_probit_inf = map2(
+    #     manual_did$g, 
+    #     manual_did$t,
+    #     ~calculate_influence_function(
+    #         g_val = .x, 
+    #         t_val = .y, 
+    #         summ_indiv_dt, 
+    #         prop_score_known = TRUE
+    #     )
+    # ),
     times = 2
 )
 comp_mb
-
-n_current = manual_did %>%
-    nrow()
-n_zm = CJ(groups = 1:30, periods = 1:52) %>% nrow()
-
-summ_time_df = comp_mb %>% 
-    as_tibble() %>%
-    mutate(
-        seconds = time / 1e9
-    ) %>%
-    group_by(
-        expr
-    ) %>%
-    summarise(
-        mean_time = mean(seconds)
-    ) %>%
-    mutate(
-        estimated_time_seconds = mean_time*n_zm/n_current, 
-        estimated_time_minutes = estimated_time_seconds/60
-    )
-summ_time_df
-
-}
 stop()
 
+summ_indiv_dt
+df
 
+length(new_infs[[1]])
 
-
-
-str(new_infs)
-
-manual_inf_M = matrix(unlist(new_infs), nrow = nrow(new_infs[[1]]))
-
-# ed = mboot()
-
-
-# profvis::profvis(
-#     map2(
-#         manual_did$g, 
-#         manual_did$t,
-#         ~calculate_influence_function(
-#             g_val = .x, 
-#             t_val = .y, 
-#             summ_indiv_dt
-#         )
-#     )
-# )
-
-
-
-# cs_fit_se = mboot(att_inf_output, DIDparams = cs_fit$DIDparams)
-# cs_fit_se$se[[4]]
-# tidy_cs_fit
-
-
-# att_infs[[1]]
-
-# cs_fit$inffunc[, 1]
-
-
-# ed = mboot(inf_M, DIDparams = cs_fit$DIDparams)
-
-# ed$se
-
-# inf_matrix = map(manual_infs, "inf_func")
-# inf_M = matrix(unlist(inf_matrix), nrow = length(inf_matrix[[1]]))
-# inf_M = inf_matrix[[1]]
+inf_M = matrix(unlist(new_infs), nrow = nrow(summ_indiv_dt))
 run_multiplier_bootstrap <- function(inf.func, biters, pl = FALSE, cores = 1) {
   ngroups = ceiling(biters/cores)
   chunks = rep(ngroups, cores)
@@ -486,7 +417,7 @@ run_multiplier_bootstrap <- function(inf.func, biters, pl = FALSE, cores = 1) {
   return(results)
 }
 
-bres = run_multiplier_bootstrap(matrix(manual_inf_M[, 1]), 1000, pl = TRUE, 8)
+bres = run_multiplier_bootstrap(matrix(inf_M[, 16]), 1000, pl = TRUE, 8)
 
 
 V = cov(bres)
@@ -498,13 +429,19 @@ bSigma <- apply(bres, 2,
 # critical value for uniform confidence band
 bT <- base::suppressWarnings(apply(bres, 1, function(b) max( abs(b/bSigma), na.rm = T)))
 bT <- bT[is.finite(bT)]
+alp = 0.05
 crit.val <- quantile(bT, 1-alp, type=1, na.rm = T)
 
 se = as.numeric(bSigma) / sqrt(nrow(inf_M))
 
 se
 
-manual_did[, std.error := ed$se]
+
+
+manual_did[, std.error := se]
+manual_did
+
+tidy_cs_fit
 
 wide_comp_ci_df = inner_join(
     manual_did %>% rename(

@@ -99,6 +99,7 @@ create_indiv_first_treat_dt = function(dt,
             ]
 
     }
+    summ_dt[, rowid := 1:.N]
     return(summ_dt)
 }
 

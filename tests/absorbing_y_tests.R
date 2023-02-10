@@ -41,6 +41,28 @@ df = as.data.table(binary_sim_df)
 
 
 tictoc::tic()
+rc_cs_fit = att_gt(
+    data = binary_sim_df,
+    yname = "Y_binary",
+    tname = "period",
+    gname = "G",
+    panel = FALSE,
+    est_method = "ipw",
+    idname = "id",
+    print_details = TRUE,
+    control_group = "notyettreated" )
+tictoc::toc()
+
+inner_join(
+rc_cs_fit %>% tidy() %>% as_tibble() %>%
+    select(group, time, rc_estimate = estimate, rc_std.error = std.error),
+cs_fit %>% tidy() %>% as_tibble() %>%
+    select(group, time, cs_estimate = estimate, cs_std.error = std.error), 
+    by = c("group", "time")
+)
+
+
+tictoc::tic()
 cs_fit = att_gt(
     data = binary_sim_df,
     yname = "Y_binary",
