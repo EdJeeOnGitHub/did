@@ -227,7 +227,6 @@ att_gt <- function(yname,
   tt <- attgt.results$tt
 
 
-
   # analytical standard errors
   # estimate variance
   # this is analogous to cluster robust standard errors that

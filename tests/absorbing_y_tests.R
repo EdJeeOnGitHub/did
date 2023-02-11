@@ -20,7 +20,7 @@ biters <- 200
 # Creates simulation params
 sim_params = did::reset.sim(
     time.periods = time.periods, 
-    n = 20000)
+    n = 2000)
 
 sim_df = did::build_sim_dataset(sp_list = sim_params, panel = TRUE) %>%
     as_tibble()
@@ -53,13 +53,6 @@ rc_cs_fit = att_gt(
     control_group = "notyettreated" )
 tictoc::toc()
 
-inner_join(
-rc_cs_fit %>% tidy() %>% as_tibble() %>%
-    select(group, time, rc_estimate = estimate, rc_std.error = std.error),
-cs_fit %>% tidy() %>% as_tibble() %>%
-    select(group, time, cs_estimate = estimate, cs_std.error = std.error), 
-    by = c("group", "time")
-)
 
 
 tictoc::tic()
@@ -71,10 +64,20 @@ cs_fit = att_gt(
     est_method = "ipw",
     idname = "id",
     print_details = TRUE,
+    bstrap = TRUE,
+    biter = 10000,
     control_group = "notyettreated" )
 tictoc::toc()
 
 tidy_cs_fit = tidy(cs_fit) %>% as_tibble()
+
+inner_join(
+rc_cs_fit %>% tidy() %>% as_tibble() %>%
+    select(group, time, rc_estimate = estimate, rc_std.error = std.error),
+cs_fit %>% tidy() %>% as_tibble() %>%
+    select(group, time, cs_estimate = estimate, cs_std.error = std.error), 
+    by = c("group", "time")
+)
 
 
 manual_did = estimate_did(
@@ -138,132 +141,6 @@ summ_group_dt = create_group_first_treat_dt(
     unique(summ_indiv_dt$G))
 
 
-calculate_influence_function = function(g_val, 
-                                        t_val, 
-                                        lookup_indiv_table,
-                                        verbose = FALSE,
-                                        check = FALSE,
-                                        prop_score_known = FALSE) {
-
-    # g_val = 3
-    # t_val = 3
-    # lookup_table = summ_group_dt
-    # N_table = N_indiv_dt
-    # lookup_indiv_table = summ_indiv_dt
-    if (t_val >= g_val) {
-        lag_t_val = g_val - 1
-    } else {
-        lag_t_val = t_val - 1
-    }
-
-
-
-
-    people_we_want = lookup_indiv_table[, G == g_val | (t_val < G | G == 0)]
-    subset_lookup_indiv_table = lookup_indiv_table[G == g_val | (t_val < G | G == 0)]
-    subset_lookup_indiv_table[, treated := factor(G == g_val, levels = c(TRUE, FALSE))]
-    pr_treat = subset_lookup_indiv_table[, mean(treated == TRUE)]
-    subset_lookup_indiv_table[, Y_post := first_Y <= t_val]
-    subset_lookup_indiv_table[, Y_pre := first_Y <= lag_t_val]
-    deltaY = subset_lookup_indiv_table[, Y_post - Y_pre]
-
-
-
-
-    n_all =  nrow(lookup_indiv_table)
-    n_subset = nrow(subset_lookup_indiv_table)
-
-    D = subset_lookup_indiv_table[, as.logical(treated)]
-
-
-
-    n = nrow(subset_lookup_indiv_table)
-    if (prop_score_known == FALSE){
-        PS = stats::glm(D ~ 1, family = "binomial")
-        ps.fit = as.vector(PS$fitted.value)
-        w.cont = ps.fit * (1 - D) / (1 - ps.fit)    
-    } else {
-        w.cont = (1 - D)
-    }
-
-    w.treat = D
-
-
-
-    att.treat = w.treat*deltaY
-    att.cont = w.cont*deltaY
-
-
-    eta.treat = mean(att.treat) / mean(w.treat)
-    eta.cont = mean(att.cont) / mean(w.cont)
-
-    inf.treat = (att.treat - w.treat * eta.treat) / mean(w.treat)
-    inf.cont.1 = (att.cont - w.cont*eta.cont)
-
-    if (prop_score_known == FALSE) {
-        score.ps = (D - ps.fit)
-        Hessian.ps = stats::vcov(PS) * n
-        asy.lin.rep.ps = score.ps %*% Hessian.ps
-        M2 = mean(w.cont * (deltaY - eta.cont))
-        inf.cont.2 = asy.lin.rep.ps %*% M2
-    } else {
-        inf.cont.2 = matrix(0, n_subset)
-    }
-
-    inf.control = (inf.cont.1 + inf.cont.2) / mean(w.cont)
-    att.inf.func = inf.treat - inf.control
-    att.inf.func = att.inf.func[, 1]
-
-    rowids = which(people_we_want == TRUE, arr.ind = FALSE, useNames = TRUE)
-    names(att.inf.func) = rowids
-    
-    if (check == TRUE) {
-
-    saved_stuff = read_rds(stringr::str_glue("temp-data/attgt-{g_val - 1}-{t_val - 1}.rds"))
-
-    attgt = saved_stuff$attgt
-
-
-        all.equal(
-            saved_stuff$G,
-            subset_lookup_indiv_table[, as.numeric(G == g_val)]) %>%
-            print()
-
-        all.equal(
-            saved_stuff$Ypost,
-            subset_lookup_indiv_table[, Y_post]
-        ) %>%
-        print()
-
-        all.equal(
-            saved_stuff$Ypre,
-            subset_lookup_indiv_table[, Y_pre]
-        ) %>%
-        print()
-        
-
-        all.equal(
-            saved_stuff$Ypost - saved_stuff$Ypre, 
-            as.numeric(deltaY)
-        ) %>%
-        print()
-
-        all.equal(
-            attgt$att.inf.func[, 1], att.inf.func
-        ) %>%
-        print()
-
-
-    }
-
-
-
-    full_inf_func = matrix(0, nrow(lookup_indiv_table))
-    full_inf_func[rowids] = att.inf.func
-
-    return(lst(g = g_val, t = t_val, full_inf_func, n_adjustment = n_all/n_subset))
-}
-
 manual_infs = purrr::map2(
     manual_did$g, 
     manual_did$t,
@@ -282,25 +159,84 @@ att_inf_output = cs_fit$inffunc
 att_infs = map(1:ncol(att_inf_output), ~as.matrix(att_inf_output[, .x]))
 
 
+inf_matrix = matrix(unlist(new_infs), nrow = nrow(new_infs[[1]]))
 test_that("Influence functions match", {
     map2(new_infs, att_infs, all.equal) %>%
     map(expect_true)
 }
 )
 
+calculate_att_g_t_se = function(inf_matrix, biter = 2000, pl = TRUE, ncores = 8, alp = 0.05){
+    n = nrow(inf_matrix)
+    bres = sqrt(n) * run_multiplier_bootstrap(
+        inf_matrix, 
+        biter, 
+        pl = pl, 
+        ncores)
+    V = cov(bres)
+    bSigma <- apply(bres, 2,
+                    function(b) (quantile(b, .75, type=1, na.rm = T) -
+                                    quantile(b, .25, type=1, na.rm = T))/(qnorm(.75) - qnorm(.25)))
+    # critical value for uniform confidence band
+    bT <- base::suppressWarnings(apply(bres, 1, function(b) max( abs(b/bSigma), na.rm = T)))
+    bT <- bT[is.finite(bT)]
+    crit.val <- quantile(bT, 1-alp, type=1, na.rm = T)
+    se = as.numeric(bSigma) / sqrt(nrow(inf_matrix))
+    return(se)
+}
+
+
+
+test_that("Same analytical", {
+    ed_V = Matrix::t(inf_matrix) %*% inf_matrix / nrow(inf_matrix)
+    diff_df = bind_cols(
+        ed_V = ed_V[, 1],
+        cs_V = cs_fit$V_analytical[, 1]
+    ) %>%
+        mutate( 
+            diff = ed_V - cs_V
+        )
+    map(diff_df$diff, expect_lte, 1e-6)
+}
+)
+
+
+
+manual_se = calculate_att_g_t_se(
+    inf_matrix,
+    biter = 10000
+    )
+
+
+comp_se = tibble(
+    manual_se = manual_se,
+    cs_se = tidy_cs_fit %>%
+        pull(std.error)
+)
+
+test_that("Homo SEs work", {
+    expect_equal( 
+        tidy_cs_fit %>%
+            pull(std.error),
+        manual_se
+        )
+})
+
+
+manual_se
 
 compare_timings = TRUE
 
 if (compare_timings) {
 comp_mb = microbenchmark::microbenchmark(
-    # cs_fit = att_gt(
-    #     data = binary_sim_df,
-    #     yname = "Y_binary",
-    #     tname = "period",
-    #     gname = "G",
-    #     est_method = "ipw",
-    #     idname = "id",
-    #     control_group = "notyettreated" ),
+    cs_fit = att_gt(
+        data = binary_sim_df,
+        yname = "Y_binary",
+        tname = "period",
+        gname = "G",
+        est_method = "ipw",
+        idname = "id",
+        control_group = "notyettreated" ),
     manual_did = estimate_did(
         df,
         y_var = "first_Y",
