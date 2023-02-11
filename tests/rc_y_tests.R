@@ -82,7 +82,7 @@ manual_did = estimate_did(
     group_var = "G",
     t_var = "period",
     id_var = "id"
-)
+)$att_df
 
 
 comp_df = inner_join(

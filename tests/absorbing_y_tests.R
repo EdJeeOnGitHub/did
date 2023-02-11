@@ -86,7 +86,7 @@ manual_did = estimate_did(
     group_var = "G",
     t_var = "period",
     id_var = "id"
-)
+)$att_df
 
 
 comp_df = inner_join(
@@ -142,13 +142,13 @@ summ_group_dt = create_group_first_treat_dt(
 
 
 manual_infs = purrr::map2(
-    manual_did$g, 
-    manual_did$t,
+    manual_did$group, 
+    manual_did$time,
     ~calculate_influence_function(
         g_val = .x, 
         t_val = .y, 
         summ_indiv_dt,
-        prop_score_known = TRUE
+        prop_score_known = FALSE
     )
 )
 
@@ -166,24 +166,6 @@ test_that("Influence functions match", {
 }
 )
 
-calculate_att_g_t_se = function(inf_matrix, biter = 2000, pl = TRUE, ncores = 8, alp = 0.05){
-    n = nrow(inf_matrix)
-    bres = sqrt(n) * run_multiplier_bootstrap(
-        inf_matrix, 
-        biter, 
-        pl = pl, 
-        ncores)
-    V = cov(bres)
-    bSigma <- apply(bres, 2,
-                    function(b) (quantile(b, .75, type=1, na.rm = T) -
-                                    quantile(b, .25, type=1, na.rm = T))/(qnorm(.75) - qnorm(.25)))
-    # critical value for uniform confidence band
-    bT <- base::suppressWarnings(apply(bres, 1, function(b) max( abs(b/bSigma), na.rm = T)))
-    bT <- bT[is.finite(bT)]
-    crit.val <- quantile(bT, 1-alp, type=1, na.rm = T)
-    se = as.numeric(bSigma) / sqrt(nrow(inf_matrix))
-    return(se)
-}
 
 
 
@@ -207,36 +189,209 @@ manual_se = calculate_att_g_t_se(
     biter = 10000
     )
 
+cs_manual_se = calculate_att_g_t_se(
+    as.matrix(cs_fit$inffunc),
+    biter = 10000
+)
+
+
 
 comp_se = tibble(
     manual_se = manual_se,
     cs_se = tidy_cs_fit %>%
-        pull(std.error)
+        pull(std.error), 
+    cs_manual_se = cs_manual_se
 )
 
+
 test_that("Homo SEs work", {
-    expect_equal( 
-        tidy_cs_fit %>%
-            pull(std.error),
-        manual_se
-        )
+    # Results don't tend to match perfectly just due to bootstrapping it seems
+    # Even taking cs_fit$inffunc and bootstrapping that tends to give slightly 
+    # different results to using inf_matrix.
+    se_diff = abs(tidy_cs_fit$std.error - manual_se)/tidy_cs_fit$std.error
+    # no worse than 10% deviation from CS package
+    map(100*se_diff, expect_lte, 10)
+    # On average within 5%
+    expect_lte(mean(se_diff), 0.05)
+
 })
 
 
-manual_se
+#### Aggregations ####
+
+#' @title Compute extra term in influence function due to estimating weights
+#'
+#' @description A function to compute the extra term that shows up in the
+#'  influence function for aggregated treatment effect parameters
+#'  due to estimating the weights
+#'
+#' @param keepers a vector of indices for which group-time average
+#'  treatment effects are used to compute a particular aggregated parameter
+#' @param pg a vector with same length as total number of group-time average
+#'  treatment effects that contains the probability of being in particular group
+#' @param weights.ind additional sampling weights (nx1)
+#' @param G vector containing which group a unit belongs to (nx1)
+#' @param group vector of groups
+#'
+#' @return nxk influence function matrix
+#'
+#' @keywords internal
+wif <- function(keepers, pg, weights.ind, G, group) {
+  # note: weights are all of the form P(G=g|cond)/sum_cond(P(G=g|cond))
+  # this is equal to P(G=g)/sum_cond(P(G=g)) which simplifies things here
+
+  # effect of estimating weights in the numerator
+  if1 <- sapply(keepers, function(k) {
+    (weights.ind * 1*BMisc::TorF(G==group[k]) - pg[k]) /
+      sum(pg[keepers])
+  })
+  # effect of estimating weights in the denominator
+  if2 <- base::rowSums( sapply( keepers, function(k) {
+    weights.ind*1*BMisc::TorF(G==group[k]) - pg[k]
+  })) %*%
+    t(pg[keepers]/(sum(pg[keepers])^2))
+
+  # return the influence function for the weights
+  if1 - if2
+}
+
+
+calculate_es_estimates = function(att_df, 
+                                  inf_matrix,
+                                  balance_e = NULL, 
+                                  y_var = att_g_t, 
+                                  biter = 1000,
+                                  n_cores = 8,
+                                  prop_score_known = FALSE,
+                                  group_vector = NULL
+                                  ) {
+    # att_df = manual_did
+    # biter = 100
+    # n_cores = 4
+    # prop_score_known = FALSE
+    # group_vector = summ_indiv_dt[, G]
+    if (!is.null(balance_e)) {
+        att_df = att_df %>%
+            group_by(group) %>%
+            mutate(max_et = mean(event.time)) %>%
+            filter(max_et >= balance_e) %>%
+            filter(event.time <= balance_e) %>%
+            ungroup() %>%
+            as.data.table()
+    }
+    att_df[, wt := pr/sum(pr), .(event.time, treated)]
+    agg_pr = att_df[, unique(pr), .(event.time)][, V1]
+    es_df = att_df[, .(estimate = sum(get(y_var)*wt)), .(event.time, treated)]
+
+    event_times = unique(es_df$event.time)
+    event_time_att_idx = map(
+        event_times, 
+        ~lst(
+            whichones = which(att_df[, event.time == .x]), 
+            weights.agg = att_df[event.time == .x, wt],
+            pg = att_df[event.time == .x, pr]
+            )
+        )
+    if (prop_score_known == FALSE) {
+        weight_if = map(
+            event_time_att_idx,
+            ~wif(
+                keepers = .x$whichones,
+                pg = agg_pr,
+                weights.ind = rep(1, nrow(inf_matrix)),
+                G = group_vector,
+                group = att_df[, group]
+            )
+        )
+    } else {
+        weight_if = map(event_time_att_idx, NULL)
+    }
+
+
+    et_if = imap(
+        event_time_att_idx, 
+        ~get_agg_inf_func(
+            att = att_df[, get(y_var)], 
+            inffunc1 = inf_matrix,
+            whichones = .x$whichones,
+            weights.agg = .x$weights.agg,
+            wif = weight_if[[.y]]
+        )
+    )
+    et_se = map_dbl(
+        et_if,
+        ~calculate_se(.x, biter = biter, n_cores = n_cores)
+    )
+    es_df[, std.error := et_se]
+    setorder(es_df, event.time)
+    return(es_df)
+}
+
+
+
+manual_es = manual_did %>%
+    calculate_es_estimates(
+        inf_matrix = inf_matrix, 
+        y_var = "att_g_t",
+        group_vector = summ_indiv_dt[, G],
+        biter = 10000)
+
+tidy_es_fit = cs_fit %>%
+    aggte(type = "dynamic", biters = 10000) %>%
+    tidy() %>%
+    as_tibble()
+
+tidy_es_fit %>%
+    select(event.time, estimate, std.error)
+
+
+test_that("Event Study Matches", {
+    es_comp_estimate = bind_cols(
+        cs_es = tidy_es_fit$estimate,
+        manual_es = manual_es$estimate
+    )
+    es_comp_se = bind_cols(
+        cs_es = tidy_es_fit$std.error,
+        manual_es = manual_es$std.error
+    )
+    map2(
+        es_comp_estimate$cs_es,
+        es_comp_estimate$manual_es,
+        ~expect_equal(.x, .y)
+    )
+    es_comp_se = es_comp_se %>%
+        mutate(diff = abs(manual_es -cs_es)) %>%
+        mutate(pct_diff = 100*diff/cs_es)
+    map(
+        es_comp_se$pct_diff,
+        ~expect_lte(.x, 10)
+    )
+
+})
 
 compare_timings = TRUE
 
 if (compare_timings) {
 comp_mb = microbenchmark::microbenchmark(
-    cs_fit = att_gt(
-        data = binary_sim_df,
-        yname = "Y_binary",
-        tname = "period",
-        gname = "G",
-        est_method = "ipw",
-        idname = "id",
-        control_group = "notyettreated" ),
+    # cs_fit = att_gt(
+    #     data = binary_sim_df,
+    #     yname = "Y_binary",
+    #     tname = "period",
+    #     gname = "G",
+    #     est_method = "ipw",
+    #     bstrap = FALSE,
+    #     idname = "id",
+    #     control_group = "notyettreated" ),
+    just_att = map2(
+        manual_did$g,
+        manual_did$t,
+        ~calculate_att_g_t(
+            g_val = .x,
+            t_val = .y,
+            lookup_table = summ_group_dt,
+            N_table = N_indiv_dt 
+        )
+    ),
     manual_did = estimate_did(
         df,
         y_var = "first_Y",
@@ -301,6 +456,16 @@ manual_inf_M = matrix(unlist(new_infs), nrow = nrow(new_infs[[1]]))
 
 # ed = mboot()
 
+
+profvis::profvis(
+    estimate_did(
+        df,
+        y_var = "first_Y",
+        group_var = "G",
+        t_var = "period",
+        id_var = "id"
+    )
+)
 
 # profvis::profvis(
 #     map2(

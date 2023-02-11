@@ -361,6 +361,14 @@ compute.aggte <- function(MP,
       whiche <- which( (originalt - originalgroup == e) & (include.balanced.gt) )
       pge <- pg[whiche]/(sum(pg[whiche]))
       wif.e <- wif(whiche, pg, weights.ind, G, group)
+      saveRDS(lst(
+        wif.e,
+        whiche,
+        pg,
+        weights.ind,
+        G,
+        group
+      ), stringr::str_glue("temp-data/wif-e-{e}.rds"))
       inf.func.e <- as.numeric(get_agg_inf_func(att=att,
                                                 inffunc1=inffunc1,
                                                 whichones=whiche,

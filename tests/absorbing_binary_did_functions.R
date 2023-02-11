@@ -15,7 +15,10 @@ estimate_did = function(data,
                         group_var, 
                         t_var, 
                         id_var,
-                        weight_df = NULL){
+                        weight_df = NULL,
+                        prop_score_known = FALSE, 
+                        biter = 1000, 
+                        n_cores = 8){
     data = as.data.table(data)
     t_levels = sort(unique(data[, get(t_var)]))
     group_levels = data[,.(G = unique(get(group_var)))][order(G), G]
@@ -58,6 +61,18 @@ estimate_did = function(data,
         ), 
         .progress = TRUE
     )
+
+    inf_func_output = map2(
+        gs_and_ts_we_want$g, 
+        gs_and_ts_we_want$t,
+        ~calculate_influence_function(
+            g_val = .x, 
+            t_val = .y, 
+            summ_indiv_data,
+            prop_score_known = prop_score_known
+        )
+    )
+
     gs_and_ts_we_want[, att_g_t := map_dbl(att_estimates, "att_g_t")]
     gs_and_ts_we_want[, event.time := time - group]
     
@@ -70,7 +85,8 @@ estimate_did = function(data,
         by.y = "G",
         all.x = TRUE
     )
-    return(gs_and_ts_we_want)
+    gs_and_ts_we_want[, treated := event.time >= 0]
+    return(lst(att_df = gs_and_ts_we_want, inf_func_output))
 }
 
 create_indiv_first_treat_dt = function(dt, 
@@ -667,4 +683,23 @@ calculate_influence_function = function(g_val,
     full_inf_func[rowids] = att.inf.func
 
     return(lst(g = g_val, t = t_val, full_inf_func, n_adjustment = n_all/n_subset))
+}
+
+calculate_se = function(inf_matrix, biter = 2000, pl = TRUE, n_cores = 8, alp = 0.05){
+    n = nrow(inf_matrix)
+    bres = sqrt(n) * run_multiplier_bootstrap(
+        inf_matrix, 
+        biter, 
+        pl = pl, 
+        n_cores)
+    V = cov(bres)
+    bSigma <- apply(bres, 2,
+                    function(b) (quantile(b, .75, type=1, na.rm = T) -
+                                    quantile(b, .25, type=1, na.rm = T))/(qnorm(.75) - qnorm(.25)))
+    # critical value for uniform confidence band
+    bT <- base::suppressWarnings(apply(bres, 1, function(b) max( abs(b/bSigma), na.rm = T)))
+    bT <- bT[is.finite(bT)]
+    crit.val <- quantile(bT, 1-alp, type=1, na.rm = T)
+    se = as.numeric(bSigma) / sqrt(nrow(inf_matrix))
+    return(se)
 }
