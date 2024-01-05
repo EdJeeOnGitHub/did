@@ -200,7 +200,7 @@ compute.att_gt <- function(dp) {
             preliminary_logit <- glm(G ~ -1 + covariates, family=binomial(link=logit))
             preliminary_pscores <- predict(preliminary_logit, type="response")
 
-            print(paste0("g: ", g, "t: ", t, "p_scores: ", preliminary_pscores))
+            print(paste0("g: ", g, " t: ", t, " p_scores: ", preliminary_pscores))
             
 
             if (max(preliminary_pscores) >= 0.999) {
