@@ -19,6 +19,7 @@ library(DRDID)
 library(BMisc)
 library(ggplot2)
 library(ggpubr)
+library(data.table)
 ```
 
 # Fast Simulations
@@ -39,7 +40,16 @@ introduced any bugs into the code
 time.periods <- 4
 reset.sim()
 data <- build_sim_dataset()
-
+known_prop_score_df = expand.grid(
+  t_period = 1:max(data$period),
+  g_period = unique(data$G), 
+  id_var = unique(data$id)
+) %>% as.data.table()
+known_prop_score_df[, prop_score := runif(.N)]
+# custom
+res <- att_gt(yname="Y", xformla=~X, data=data, tname="period", idname="id",
+              gname="G", est_method=custom_est_known_ps, known_prop_score_df = known_prop_score_df)
+res
 # dr
 res <- att_gt(yname="Y", xformla=~X, data=data, tname="period", idname="id",
               gname="G", est_method="dr")

@@ -183,7 +183,9 @@ att_gt <- function(yname,
                    base_period="varying",
                    print_details=FALSE,
                    pl=FALSE,
-                   cores=1) {
+                   cores=1,
+                   known_prop_score_df = NULL
+                   ) {
 
   # this is a DIDparams object
   dp <- pre_process_did(yname=yname,
@@ -209,6 +211,7 @@ att_gt <- function(yname,
                         cores=cores,
                         call=match.call()
   )
+  dp$prop_score_df = known_prop_score_df
 
   #-----------------------------------------------------------------------------
   # Compute all ATT(g,t)

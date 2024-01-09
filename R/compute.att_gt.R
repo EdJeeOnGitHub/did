@@ -1,3 +1,112 @@
+
+custom_est_known_ps = function (y1, 
+                          y0, 
+                          D, 
+                          covariates, 
+                          i.weights = NULL, 
+                          boot = FALSE, 
+                          boot.type = "weighted", 
+                          nboot = NULL, 
+                          inffunc = FALSE, 
+                          g_val,
+                          t_val,
+                          prop_score_df,
+                          panel_idx
+                          ) {
+    D <- as.vector(D)
+    n <- length(D)
+    deltaY <- as.vector(y1 - y0)
+    int.cov <- as.matrix(rep(1, n))
+    if (!is.null(covariates)) {
+        if (all(as.matrix(covariates)[, 1] == rep(1, n))) {
+            int.cov <- as.matrix(covariates)
+        }
+        else {
+            int.cov <- as.matrix(cbind(1, covariates))
+        }
+    }
+    if (is.null(i.weights)) {
+        i.weights <- as.vector(rep(1, n))
+    }
+    else if (min(i.weights) < 0) 
+        stop("i.weights must be non-negative")
+    # PS <- suppressWarnings(stats::glm(D ~ -1 + int.cov, family = "binomial", 
+    #     weights = i.weights))
+    # ps.fit <- as.vector(PS$fitted.values)
+    # ps.fit <- pmin(ps.fit, 1 - 1e-16)
+
+    # calculating propensity score by hand
+    subset_condition = g_val == prop_score_df$g_period & t_val == prop_score_df$t_period
+    subset_prop_score_df = prop_score_df[subset_condition, ]
+    id_idx_pscore = match(panel_idx, subset_prop_score_df$id_var)
+    ps.fit = subset_prop_score_df[id_idx_pscore, "prop_score"]
+
+
+    w.treat <- i.weights * D
+    w.cont <- i.weights * ps.fit * (1 - D)/(1 - ps.fit)
+    att.treat <- w.treat * deltaY
+    att.cont <- w.cont * deltaY
+    eta.treat <- mean(att.treat)/mean(w.treat)
+    eta.cont <- mean(att.cont)/mean(w.cont)
+    ipw.att <- eta.treat - eta.cont
+    score.ps <- i.weights * (D - ps.fit) * int.cov
+
+    Hessian.ps <-  matrix(0, nrow = ncol(score.ps), ncol = ncol(score.ps))
+
+    asy.lin.rep.ps <- score.ps %*% Hessian.ps
+    inf.treat <- (att.treat - w.treat * eta.treat)/mean(w.treat)
+    inf.cont.1 <- (att.cont - w.cont * eta.cont)
+    M2 <- base::colMeans(w.cont * (deltaY - eta.cont) * int.cov)
+    inf.cont.2 <- asy.lin.rep.ps %*% M2
+    inf.control <- (inf.cont.1 + inf.cont.2)/mean(w.cont)
+    att.inf.func <- inf.treat - inf.control
+    if (boot == FALSE) {
+        se.att <- stats::sd(att.inf.func)/sqrt(n)
+        uci <- ipw.att + 1.96 * se.att
+        lci <- ipw.att - 1.96 * se.att
+        ipw.boot <- NULL
+    }
+    if (boot == TRUE) {
+        if (is.null(nboot) == TRUE) 
+            nboot = 999
+        if (boot.type == "multiplier") {
+            ipw.boot <- mboot.did(att.inf.func, nboot)
+            se.att <- stats::IQR(ipw.boot)/(stats::qnorm(0.75) - 
+                stats::qnorm(0.25))
+            cv <- stats::quantile(abs(ipw.boot/se.att), probs = 0.95)
+            uci <- ipw.att + cv * se.att
+            lci <- ipw.att - cv * se.att
+        }
+        else {
+            ipw.boot <- unlist(lapply(1:nboot, wboot.std.ipw.panel, 
+                n = n, deltaY = deltaY, D = D, int.cov = int.cov, 
+                i.weights = i.weights))
+            se.att <- stats::IQR(ipw.boot - ipw.att)/(stats::qnorm(0.75) - 
+                stats::qnorm(0.25))
+            cv <- stats::quantile(abs((ipw.boot - ipw.att)/se.att), 
+                probs = 0.95)
+            uci <- ipw.att + cv * se.att
+            lci <- ipw.att - cv * se.att
+        }
+    }
+    if (inffunc == FALSE) 
+        att.inf.func <- NULL
+    call.param <- match.call()
+    argu <- mget(names(formals()), sys.frame(sys.nframe()))
+    boot.type <- ifelse(argu$boot.type == "multiplier", "multiplier", 
+        "weighted")
+    boot <- ifelse(argu$boot == TRUE, TRUE, FALSE)
+    argu <- list(panel = TRUE, normalized = TRUE, boot = boot, 
+        boot.type = boot.type, nboot = nboot, type = "ipw")
+    ret <- (list(ATT = ipw.att, se = se.att, uci = uci, lci = lci, 
+        boots = ipw.boot, att.inf.func = att.inf.func, call.param = call.param, 
+        argu = argu))
+    class(ret) <- "drdid"
+    return(ret)
+}
+
+
+
 #' @title Compute Group-Time Average Treatment Effects
 #'
 #' @description `compute.att_gt` does the main work for computing
@@ -16,7 +125,6 @@
 #'
 #' @export
 compute.att_gt <- function(dp) {
-
   #-----------------------------------------------------------------------------
   # unpack DIDparams
   #-----------------------------------------------------------------------------
@@ -39,6 +147,14 @@ compute.att_gt <- function(dp) {
   nG <- dp$nG
   tlist <- dp$tlist
   glist <- dp$glist
+  # prop_score_df = expand.grid(
+  #   g_period = glist,
+  #   t_period = tlist,
+  #   id_var = unique(data[,idname])
+  # ) %>% data.table() 
+  # prop_score_df$prop_score = runif(nrow(prop_score_df), 0, 1)
+
+  prop_score_df = dp$prop_score_df
 
   #-----------------------------------------------------------------------------
   # main computations
@@ -74,12 +190,14 @@ compute.att_gt <- function(dp) {
 
   # loop over groups
   for (g in 1:nG) {
+    g = 1
 
     # Set up .G once
     data$.G <- 1*(data[,gname] == glist[g])
 
     # loop over time periods
     for (t in 1:tlist.length) {
+      t = 1      
 
       #-----------------------------------------------------------------------------
       # Set pret
@@ -237,7 +355,12 @@ compute.att_gt <- function(dp) {
                               D=G,
                               covariates=covariates,
                               i.weights=w,
-                              inffunc=TRUE)
+                              inffunc=TRUE,
+                              g_val = glist[g],
+                              t_val = tlist[t],
+                              prop_score_df = prop_score_df,
+                              panel_idx = disdat$id
+                              )
         } else if (est_method == "ipw") {
           # inverse-probability weights
           attgt <- DRDID::std_ipw_did_panel(Ypost, Ypre, G,
@@ -333,7 +456,7 @@ compute.att_gt <- function(dp) {
                               D=G,
                               covariates=covariates,
                               i.weights=w,
-                              inffunc=TRUE)
+                              inffunc=TRUE, glist[g], tlist[t])
         } else if (est_method == "ipw") {
           # inverse-probability weights
           attgt <- DRDID::std_ipw_did_rc(y=Y,
