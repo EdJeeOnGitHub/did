@@ -38,6 +38,7 @@ custom_est_known_ps = function (y1,
     # calculating propensity score by hand
     subset_condition = g_val == prop_score_df$g_period & t_val == prop_score_df$t_period
     subset_prop_score_df = prop_score_df[subset_condition, ]
+
     id_idx_pscore = match(panel_idx, subset_prop_score_df$id_var)
     ps.fit = subset_prop_score_df[id_idx_pscore, "prop_score"]
 
@@ -359,7 +360,7 @@ compute.att_gt <- function(dp) {
                               g_val = glist[g],
                               t_val = tlist[t],
                               prop_score_df = prop_score_df,
-                              panel_idx = disdat$id
+                              panel_idx = disdat[, idname] 
                               )
         } else if (est_method == "ipw") {
           # inverse-probability weights
