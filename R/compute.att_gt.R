@@ -41,7 +41,8 @@ custom_est_known_ps = function (y1,
 
 
     id_idx_pscore = match(panel_idx, subset_prop_score_df$id_var)
-    ps.fit = subset_prop_score_df[id_idx_pscore, prop_score]
+    matched_prop_score_df = subset_prop_score_df[id_idx_pscore,]
+    ps.fit = matched_prop_score_df$prop_score
 
 
     w.treat <- i.weights * D
