@@ -190,14 +190,12 @@ compute.att_gt <- function(dp) {
 
   # loop over groups
   for (g in 1:nG) {
-    g = 1
 
     # Set up .G once
     data$.G <- 1*(data[,gname] == glist[g])
 
     # loop over time periods
     for (t in 1:tlist.length) {
-      t = 1      
 
       #-----------------------------------------------------------------------------
       # Set pret
@@ -318,7 +316,9 @@ compute.att_gt <- function(dp) {
             preliminary_logit <- glm(G ~ -1 + covariates, family=binomial(link=logit))
             preliminary_pscores <- predict(preliminary_logit, type="response")
 
+          if (print_details) {
             print(paste0("g: ", glist[g], " t: ", tlist[t+tfac], " p_scores: ", unique(preliminary_pscores)))
+          }
             
 
             if (max(preliminary_pscores) >= 0.999) {
